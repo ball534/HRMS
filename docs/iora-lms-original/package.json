@@ -1,0 +1,19 @@
+{
+  "name": "iora-lms",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "iORA Learning Hub — staff onboarding LMS",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

@@ -1,0 +1,785 @@
+// This is the InsideHR Prisma schema
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// Enums
+// ============================================================
+
+enum Role {
+  ADMIN
+  HR
+  MANAGER
+  EMPLOYEE
+  CONTRACTOR
+}
+
+enum EmploymentType {
+  EMPLOYEE
+  CONTRACTOR
+  PART_TIME
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum Country {
+  SG
+  MY
+}
+
+enum AuditAction {
+  USER_CREATED
+  USER_UPDATED
+  PASSWORD_CHANGED
+  PASSWORD_RESET_REQUESTED
+  LOGIN
+  LOGOUT
+  LEAVE_SUBMITTED
+  LEAVE_APPROVED
+  LEAVE_REJECTED
+  LEAVE_CANCELLED
+  BALANCE_ADJUSTED
+  EXPENSE_SUBMITTED
+  EXPENSE_APPROVED
+  EXPENSE_REJECTED
+  EXPENSE_REIMBURSED
+  DOCUMENT_UPLOADED
+  DOCUMENT_DELETED
+  LEAVE_DELETED
+  EXPENSE_DELETED
+  REVIEW_CYCLE_CREATED
+  REVIEW_CYCLE_OPENED
+  REVIEW_CYCLE_EVALUATION_OPENED
+  REVIEW_CYCLE_CLOSED
+  REVIEW_GOALS_SET
+  REVIEW_SUBMITTED
+  REVIEW_ACKNOWLEDGED
+  REVIEW_REOPENED
+  PROBATION_CONFIRMED
+  PROBATION_EXTENDED
+  PROBATION_NOT_CONFIRMED
+  TIME_ENTRY_SUBMITTED
+  TIME_ENTRY_APPROVED
+  TIME_ENTRY_REJECTED
+  TIME_ENTRY_DELETED
+  TIME_ENTRY_UNLOCKED
+  REWARD_CYCLE_CREATED
+  REWARD_CYCLE_APPROVED
+  REWARD_CYCLE_PAID
+  REWARD_CYCLE_CLOSED
+  REWARD_ALLOCATION_SAVED
+  REWARD_ALLOCATION_APPROVED
+  REWARD_ALLOCATION_PAID
+  REWARD_ALLOCATION_CANCELLED
+  WORK_PASS_CREATED
+  WORK_PASS_UPDATED
+  WORK_PASS_DELETED
+  BLACKOUT_CREATED
+  BLACKOUT_UPDATED
+  BLACKOUT_DELETED
+}
+
+enum DocumentScope {
+  COMPANY
+  EMPLOYEE
+}
+
+enum DocumentCategory {
+  CONTRACTS
+  PAYSLIPS
+  MEDICAL
+  CERTIFICATIONS
+  PERSONAL_DOCS
+  OTHER
+}
+
+enum AuditEntityType {
+  USER
+  LEAVE
+  EXPENSE
+  DOCUMENT
+  HOLIDAY
+  REVIEW_CYCLE
+  PERFORMANCE_REVIEW
+  TIME_ENTRY
+  REWARD_CYCLE
+  REWARD_ALLOCATION
+  WORK_PASS
+  BLACKOUT
+}
+
+enum HalfDayOption {
+  NONE
+  AM
+  PM
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  FOR_APPROVAL
+  APPROVED
+  REJECTED
+  REIMBURSED
+}
+
+enum ExpenseCategory {
+  LOCAL_TRANSPORT
+  SUBSCRIPTIONS
+  OFFICE_EXPENSES
+  MEALS_ENTERTAINMENT
+  MEDICAL
+  COMMUNICATION
+  TRAVEL
+  TRAINING
+  OTHERS
+}
+
+// ============================================================
+// Performance review enums
+// ============================================================
+
+enum ReviewTemplateType {
+  FULL
+  LITE
+  PROBATION
+}
+
+enum ReviewCycleStatus {
+  DRAFT
+  ACTIVE
+  EVALUATION
+  CLOSED
+}
+
+enum PerformanceReviewStatus {
+  NOT_STARTED
+  GOALS_SET
+  IN_EVALUATION
+  PENDING_ACKNOWLEDGEMENT
+  ACKNOWLEDGED
+}
+
+enum GoalType {
+  QUALITATIVE
+  QUANTITATIVE
+}
+
+enum GoalOutcome {
+  NOT_EVALUATED
+  MISSED
+  PARTIAL
+  MET
+  EXCEEDED
+}
+
+enum ProbationDecision {
+  CONFIRMED
+  EXTENDED
+  NOT_CONFIRMED
+}
+
+enum TimeEntryStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum RewardCycleStatus {
+  DRAFT
+  APPROVED
+  PAID
+  CLOSED
+}
+
+enum RewardAllocationStatus {
+  DRAFT
+  APPROVED
+  PAID
+  CANCELLED
+}
+
+enum BonusType {
+  PERFORMANCE
+  CONTRACTUAL_13TH
+  AD_HOC
+}
+
+// Singapore + Malaysia work-pass types most retailers issue.
+// CITIZEN / PR is recorded as NONE (no pass needed) for tracking completeness.
+enum WorkPassType {
+  NONE              // SG citizen, SG PR, MY citizen, MY PR
+  SG_WORK_PERMIT    // SG Work Permit (WP) — basic-skilled, sector quota applies
+  SG_S_PASS         // SG S Pass — mid-skilled, salary + quota
+  SG_EMPLOYMENT_PASS // SG Employment Pass (EP) — professional
+  SG_DEPENDANT_PASS // SG Dependant Pass with LOC
+  SG_LTVP_PLUS      // SG LTVP+ with LOC
+  MY_WORK_PERMIT    // MY foreign worker permit
+  MY_EMPLOYMENT_PASS // MY EP I/II/III
+  MY_DEPENDANT_PASS // MY Dependant Pass with work endorsement
+  OTHER
+}
+
+// ============================================================
+// Models
+// ============================================================
+
+model User {
+  id                 String         @id @default(uuid())
+  email              String         @unique
+  passwordHash       String
+  firstName          String
+  lastName           String
+  phone              String?
+  gender             String?
+  dateOfBirth        DateTime?
+  nationality        String?
+  profilePhotoUrl    String?
+  position           String?
+  department         String?
+  employmentType     EmploymentType @default(EMPLOYEE)
+  country            Country        @default(SG)
+  hourlyRate         Decimal?       @db.Decimal(19, 4)
+  normalDailyHours   Decimal?       @db.Decimal(5, 2)
+  startDate          DateTime?
+  reportingManagerId String?
+  reportingManager   User?          @relation("ReportsTo", fields: [reportingManagerId], references: [id])
+  directReports      User[]         @relation("ReportsTo")
+  role               Role           @default(EMPLOYEE)
+  status             UserStatus     @default(ACTIVE)
+  terminatedAt       DateTime?
+  mustChangePassword Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  auditLogs          AuditLog[]
+  leaveRequests      LeaveRequest[] @relation("LeaveRequests")
+  leaveApprovals     LeaveRequest[] @relation("LeaveApprovals")
+  leaveBalances      LeaveBalance[]
+  expenses           Expense[]         @relation("UserExpenses")
+  expenseApprovals   Expense[]         @relation("ExpenseApprovals")
+  reimbursements     Expense[]         @relation("ExpenseReimbursements")
+  receiptUploads     ExpenseReceipt[]  @relation("ReceiptUploads")
+  approvalActions    ExpenseApproval[] @relation("ExpenseApprovalActions")
+  ownDocuments       Document[]        @relation("EmployeeDocuments")
+  uploadedDocs       Document[]        @relation("DocumentUploads")
+  passwordResetTokens PasswordResetToken[]
+
+  performanceReviewsAsEmployee PerformanceReview[] @relation("ReviewEmployee")
+  performanceReviewsAsManager  PerformanceReview[] @relation("ReviewManager")
+  createdReviewCycles          ReviewCycle[]       @relation("ReviewCycleCreator")
+
+  timeEntries          TimeEntry[] @relation("UserTimeEntries")
+  timeEntryApprovals   TimeEntry[] @relation("TimeEntryApprovals")
+
+  rewardAllocations      RewardAllocation[] @relation("AllocationEmployee")
+  proposedAllocations    RewardAllocation[] @relation("AllocationProposer")
+  approvedAllocations    RewardAllocation[] @relation("AllocationApprover")
+  createdRewardCycles    RewardCycle[]      @relation("RewardCycleCreator")
+
+  workPasses             WorkPass[]
+
+  learningLessons        LearningLessonProgress[]
+  learningTests          LearningTestProgress[]
+  learningSurvey         LearningSurvey?
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String          @id @default(uuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id])
+  action     AuditAction
+  entityType AuditEntityType
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime        @default(now())
+}
+
+model PublicHoliday {
+  id         String   @id @default(uuid())
+  country    Country
+  date       DateTime
+  name       String
+  year       Int
+  isObserved Boolean  @default(true)
+  type       String   @default("PUBLIC_HOLIDAY")
+
+  @@unique([country, date])
+  @@index([country, year])
+}
+
+model LeaveType {
+  id                 String   @id @default(uuid())
+  name               String   @unique
+  defaultEntitlement Float
+  requiresAttachment Boolean  @default(false)
+  allowsHalfDay      Boolean  @default(true)
+  applicableToAll    Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  balances LeaveBalance[]
+  requests LeaveRequest[]
+}
+
+model LeaveBalance {
+  id                       String    @id @default(uuid())
+  userId                   String
+  user                     User      @relation(fields: [userId], references: [id])
+  leaveTypeId              String
+  leaveType                LeaveType @relation(fields: [leaveTypeId], references: [id])
+  year                     Int
+  entitlement              Float
+  entitlementOverride      Float?
+  used                     Float     @default(0)
+  pending                  Float     @default(0)
+  carryForward             Float     @default(0)
+  carryForwardExpiresAt    DateTime?
+  adjustment               Float     @default(0)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@unique([userId, leaveTypeId, year])
+  @@index([userId, year])
+}
+
+model LeaveRequest {
+  id              String        @id @default(uuid())
+  userId          String
+  user            User          @relation("LeaveRequests", fields: [userId], references: [id])
+  leaveTypeId     String
+  leaveType       LeaveType     @relation(fields: [leaveTypeId], references: [id])
+  startDate       DateTime
+  endDate         DateTime
+  halfDay         HalfDayOption @default(NONE)
+  daysCount       Float
+  reason          String?
+  attachmentKey   String?
+  attachmentName  String?
+  status          LeaveStatus   @default(PENDING)
+  approverId      String?
+  approver        User?         @relation("LeaveApprovals", fields: [approverId], references: [id])
+  approvedAt      DateTime?
+  rejectionReason String?
+  cancelledAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([userId, status])
+  @@index([approverId, status])
+  @@index([startDate, endDate])
+}
+
+model Expense {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation("UserExpenses", fields: [userId], references: [id])
+  category       ExpenseCategory
+  amount         Decimal         @db.Decimal(19, 4)
+  currency       String
+  merchant       String
+  receiptDate    DateTime
+  description    String?
+  status         ExpenseStatus   @default(DRAFT)
+  approverId     String?
+  approver       User?           @relation("ExpenseApprovals", fields: [approverId], references: [id])
+  reimbursedAt   DateTime?
+  reimbursedById String?
+  reimbursedBy   User?           @relation("ExpenseReimbursements", fields: [reimbursedById], references: [id])
+  submittedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  receipts   ExpenseReceipt[]
+  approvals  ExpenseApproval[]
+
+  @@index([userId, status])
+  @@index([approverId, status])
+  @@index([receiptDate])
+}
+
+model ExpenseReceipt {
+  id           String   @id @default(uuid())
+  expenseId    String
+  expense      Expense  @relation(fields: [expenseId], references: [id])
+  s3Key        String
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  uploadedAt   DateTime @default(now())
+  uploadedById String
+  uploadedBy   User     @relation("ReceiptUploads", fields: [uploadedById], references: [id])
+
+  @@index([expenseId])
+}
+
+model ExpenseApproval {
+  id         String    @id @default(uuid())
+  expenseId  String
+  expense    Expense   @relation(fields: [expenseId], references: [id])
+  approverId String
+  approver   User      @relation("ExpenseApprovalActions", fields: [approverId], references: [id])
+  status     String
+  comment    String?
+  actedAt    DateTime?
+  order      Int       @default(1)
+  createdAt  DateTime  @default(now())
+
+  @@index([expenseId])
+  @@index([approverId, status])
+}
+
+model Document {
+  id           String            @id @default(uuid())
+  name         String
+  scope        DocumentScope     @default(COMPANY)
+  category     DocumentCategory  @default(OTHER)
+  employeeId   String?
+  employee     User?             @relation("EmployeeDocuments", fields: [employeeId], references: [id])
+  s3Key        String
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  uploadedById String
+  uploadedBy   User              @relation("DocumentUploads", fields: [uploadedById], references: [id])
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([scope, employeeId])
+  @@index([scope, employeeId, category])
+}
+
+// ============================================================
+// Performance review models
+// ============================================================
+
+model ReviewCycle {
+  id                       String               @id @default(uuid())
+  name                     String
+  templateType             ReviewTemplateType   @default(FULL)
+  status                   ReviewCycleStatus    @default(DRAFT)
+  startDate                DateTime
+  endDate                  DateTime
+  goalSettingDeadline      DateTime?
+  evaluationOpensAt        DateTime?
+  evaluationDeadline       DateTime?
+
+  // Configurable rating (FULL/LITE only — null for PROBATION which has no rating)
+  ratingScale              Int                  @default(5)
+  ratingLabels             Json                 @default("[\"Below\",\"Approaching\",\"Meets\",\"Exceeds\",\"Outstanding\"]")
+
+  // Goal config
+  minGoals                 Int                  @default(3)
+  maxGoals                 Int                  @default(7)
+  goalWeightsEnabled       Boolean              @default(false)
+
+  // Flow toggles
+  employeeSelfAssessment   Boolean              @default(false)
+  employeeCanComment       Boolean              @default(true)
+  requireManagerNarrative  Boolean              @default(true)
+
+  // Retail-specific knobs
+  includeSalesTarget       Boolean              @default(false)
+  targetCurrency           String?
+  includeAttendanceMetric  Boolean              @default(false)
+
+  createdById              String
+  createdBy                User                 @relation("ReviewCycleCreator", fields: [createdById], references: [id])
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  reviews                  PerformanceReview[]
+  rewardCycles             RewardCycle[]
+
+  @@index([status, endDate])
+  @@index([templateType, status])
+}
+
+model PerformanceReview {
+  id                       String                   @id @default(uuid())
+  cycleId                  String
+  cycle                    ReviewCycle              @relation(fields: [cycleId], references: [id])
+
+  employeeId               String
+  employee                 User                     @relation("ReviewEmployee", fields: [employeeId], references: [id])
+
+  // Snapshot of reporting manager at scope-assignment time
+  managerId                String
+  manager                  User                     @relation("ReviewManager", fields: [managerId], references: [id])
+
+  status                   PerformanceReviewStatus  @default(NOT_STARTED)
+
+  // Rating (FULL/LITE)
+  overallRating            Int?
+  managerNarrative         String?
+
+  // Employee response
+  employeeAcknowledgement  String?
+  employeeSelfAssessment   String?
+
+  // Retail extras (filled when cycle toggles enabled)
+  salesTargetAmount        Decimal?                 @db.Decimal(19, 4)
+  salesActualAmount        Decimal?                 @db.Decimal(19, 4)
+  attendanceDaysWorked     Int?
+  attendanceDaysScheduled  Int?
+  promotionReady           Boolean?
+
+  // Probation cycles only
+  probationDecision        ProbationDecision?
+
+  submittedForEvaluationAt DateTime?
+  acknowledgedAt           DateTime?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+
+  goals                    Goal[]
+  rewardAllocations        RewardAllocation[] @relation("ReviewAllocations")
+
+  @@unique([cycleId, employeeId])
+  @@index([managerId, status])
+  @@index([employeeId, cycleId])
+}
+
+model Goal {
+  id              String              @id @default(uuid())
+  reviewId        String
+  review          PerformanceReview   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  title           String
+  description     String?
+  goalType        GoalType            @default(QUALITATIVE)
+
+  // Quantitative goals
+  targetValue     Decimal?            @db.Decimal(19, 4)
+  actualValue     Decimal?            @db.Decimal(19, 4)
+  unit            String?
+
+  // Optional weight (0-100); only meaningful when cycle.goalWeightsEnabled
+  weight          Int?
+
+  outcome         GoalOutcome         @default(NOT_EVALUATED)
+  managerComment  String?
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([reviewId])
+}
+
+// ============================================================
+// Part-time timesheet
+// ============================================================
+
+model TimeEntry {
+  id              String           @id @default(uuid())
+  userId          String
+  user            User             @relation("UserTimeEntries", fields: [userId], references: [id])
+  workDate        DateTime         @db.Date
+  startTime       DateTime?
+  endTime         DateTime?
+  breakMinutes    Int              @default(0)
+  hoursWorked     Decimal          @db.Decimal(5, 2)
+  description     String?
+  isPublicHoliday Boolean          @default(false)
+  status          TimeEntryStatus  @default(DRAFT)
+  approverId      String?
+  approver        User?            @relation("TimeEntryApprovals", fields: [approverId], references: [id])
+  submittedAt     DateTime?
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([userId, workDate])
+  @@index([userId, status])
+  @@index([approverId, status])
+  @@index([workDate])
+}
+
+// ============================================================
+// Rewards / Bonus allocation
+// ============================================================
+
+model RewardCycle {
+  id                  String              @id @default(uuid())
+  name                String
+  description         String?
+  status              RewardCycleStatus   @default(DRAFT)
+  reviewCycleId       String?             // optional link to a performance ReviewCycle
+  reviewCycle         ReviewCycle?        @relation(fields: [reviewCycleId], references: [id])
+  totalPoolAmount     Decimal?            @db.Decimal(19, 4)
+  currency            String              @default("MYR")
+  payoutDate          DateTime?
+  createdById         String
+  createdBy           User                @relation("RewardCycleCreator", fields: [createdById], references: [id])
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  allocations         RewardAllocation[]
+
+  @@index([status, payoutDate])
+}
+
+model RewardAllocation {
+  id              String                  @id @default(uuid())
+  cycleId         String
+  cycle           RewardCycle             @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  employeeId      String
+  employee        User                    @relation("AllocationEmployee", fields: [employeeId], references: [id])
+
+  linkedReviewId  String?
+  linkedReview    PerformanceReview?      @relation("ReviewAllocations", fields: [linkedReviewId], references: [id])
+
+  bonusType       BonusType               @default(PERFORMANCE)
+  amount          Decimal                 @db.Decimal(19, 4)
+  currency        String                  // snapshot from cycle at create time
+  rationale       String?
+
+  status          RewardAllocationStatus  @default(DRAFT)
+
+  proposedById    String?
+  proposedBy      User?                   @relation("AllocationProposer", fields: [proposedById], references: [id])
+
+  approverId      String?
+  approver        User?                   @relation("AllocationApprover", fields: [approverId], references: [id])
+  approvedAt      DateTime?
+  paidAt          DateTime?
+
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@unique([cycleId, employeeId, bonusType])
+  @@index([cycleId, status])
+  @@index([employeeId])
+}
+
+// ============================================================
+// Work passes — SG/MY foreign worker permits + expiry tracking
+// ============================================================
+
+model WorkPass {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  passType    WorkPassType
+  passNumber  String?       // optional; some users may have multiple passes over time
+  issueDate   DateTime?
+  expiryDate  DateTime?     // null = no expiry (e.g. NONE)
+  levy        Decimal?      @db.Decimal(19, 4) // monthly levy for foreign workers, optional
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([expiryDate])
+}
+
+// ============================================================
+// Blackout windows — block leave during retail peaks (CNY, Hari Raya, etc.)
+// ============================================================
+
+model BlackoutWindow {
+  id          String   @id @default(uuid())
+  name        String
+  reason      String?
+  // Country scope. null = applies to all countries.
+  country     Country?
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  // If true, leave during this window is hard-blocked; else soft-warning only.
+  hardBlock   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([country, startDate, endDate])
+}
+
+// ============================================================
+// Learning (LMS) — onboarding journey progress synced from the
+// iORA Learning Hub. The journey is a fixed set of lessons and
+// their matching unit tests (lesson1..3 / test1..3); lesson/test
+// ids mirror the LMS course definitions (data.jsx).
+// ============================================================
+
+// Per-lesson part completion (slides → PDF → video).
+model LearningLessonProgress {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "lesson1" | "lesson2" | "lesson3" (matches the LMS course ids)
+  lessonId    String
+  slidesDone  Boolean   @default(false)
+  pdfDone     Boolean   @default(false)
+  videoDone   Boolean   @default(false)
+  // set when all three parts are complete
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+}
+
+// Per-test assessment state (attempts, lockout, best score, pass).
+model LearningTestProgress {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "test1" | "test2" | "test3" (the assessment for the matching lesson)
+  testId      String
+  attempts    Int       @default(0)
+  passed      Boolean   @default(false)
+  // best score as a 0..1 fraction
+  bestScore   Float     @default(0)
+  // locked out after MAX_TEST_ATTEMPTS failed attempts → HR follow-up
+  locked      Boolean   @default(false)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, testId])
+  @@index([userId])
+}
+
+// One feedback survey per learner, gating the e-certificate.
+model LearningSurvey {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clarity     Int
+  pace        Int
+  usefulness  Int
+  comment     String?
+  submittedAt DateTime @default(now())
+}
