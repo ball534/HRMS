@@ -18,6 +18,26 @@ function getResend(): Resend {
 
 const FROM_EMAIL = process.env.EMAIL_FROM || 'InsideHR <noreply@insidehr.com>'
 
+/**
+ * Generic email sender used by the notification adapter (reminders + letter
+ * delivery fallback). Throws if RESEND_API_KEY is not configured — callers
+ * that must not fail (cron reminders) should catch.
+ */
+export async function sendEmail(opts: {
+  to: string | string[]
+  subject: string
+  html: string
+  attachments?: { filename: string; content: Buffer }[]
+}) {
+  await getResend().emails.send({
+    from: FROM_EMAIL,
+    to: opts.to,
+    subject: opts.subject,
+    html: opts.html,
+    attachments: opts.attachments,
+  })
+}
+
 export async function sendPasswordResetEmail(
   to: string,
   resetUrl: string

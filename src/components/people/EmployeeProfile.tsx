@@ -7,7 +7,11 @@ import { toast } from 'sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CountryHolidays } from '@/components/people/CountryHolidays'
 import { EditEmployeeForm } from '@/components/people/EditEmployeeForm'
-import { adminResetPassword } from '@/actions/users'
+import { adminResetPassword, setConfirmationDate } from '@/actions/users'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 
 type Manager = {
   id: string
@@ -37,15 +41,24 @@ type User = {
   dateOfBirth?: string | null
   nationality?: string | null
   profilePhotoUrl?: string | null
+  employeeNumber?: string | null
+  nric?: string | null
+  passportNumber?: string | null
+  passportExpiry?: string | null
+  company?: string | null
   position?: string | null
   department?: string | null
   employmentType: string
   country: string
   startDate?: string | null
+  probationMonths?: number | null
+  probationEndDate?: string | null
+  confirmationDate?: string | null
   reportingManagerId?: string | null
   role: string
-  status: 'ACTIVE' | 'INACTIVE' | 'TERMINATED'
+  status: 'ACTIVE' | 'INACTIVE' | 'TERMINATED' | 'REJECTED'
   terminatedAt?: string | null
+  folderArchivedAt?: string | null
   reportingManager?: Manager
   directReports?: DirectReport[]
 }
@@ -59,6 +72,7 @@ const STATUS_STYLES: Record<string, string> = {
   ACTIVE: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   INACTIVE: 'bg-zinc-100 text-zinc-600 border-zinc-200',
   TERMINATED: 'bg-rose-50 text-rose-700 border-rose-200',
+  REJECTED: 'bg-rose-50 text-rose-700 border-rose-200',
 }
 
 const AVATAR_COLORS = [
@@ -306,6 +320,45 @@ export function EmployeeProfile({ user, isAdmin, managers, leaveBalances = [], l
           </CardContent>
         </Card>
 
+        {/* Identity & Records (Admin only) */}
+        {isAdmin && (
+          <Card>
+            <CardHeader className="border-b border-border pb-3">
+              <CardTitle className="text-sm font-medium">Identity &amp; Records</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <dl className="space-y-3">
+                <InfoRow label="Employee ID" value={user.employeeNumber} />
+                <InfoRow label="Company" value={user.company} />
+                <InfoRow label="NRIC" value={user.nric} />
+                <InfoRow label="Passport No." value={user.passportNumber} />
+                <InfoRow
+                  label="Passport Expiry"
+                  value={user.passportExpiry ? format(new Date(user.passportExpiry), 'MMM d, yyyy') : null}
+                />
+              </dl>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Probation & Confirmation (Admin only) */}
+        {isAdmin && (
+          <Card>
+            <CardHeader className="border-b border-border pb-3">
+              <CardTitle className="text-sm font-medium">Probation &amp; Confirmation</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <dl className="space-y-3">
+                <InfoRow
+                  label="Probation End (auto)"
+                  value={user.probationEndDate ? format(new Date(user.probationEndDate), 'MMM d, yyyy') : null}
+                />
+                <ConfirmationDateSetter userId={user.id} current={user.confirmationDate ?? null} />
+              </dl>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Upcoming Holidays */}
         <CountryHolidays country={user.country} />
 
@@ -472,6 +525,44 @@ export function EmployeeProfile({ user, isAdmin, managers, leaveBalances = [], l
           onClose={() => setEditing(false)}
         />
       )}
+    </div>
+  )
+}
+
+function ConfirmationDateSetter({ userId, current }: { userId: string; current: string | null }) {
+  const router = useRouter()
+  const [value, setValue] = useState(current ? current.slice(0, 10) : '')
+  const [pending, startTransition] = useTransition()
+
+  function save() {
+    startTransition(async () => {
+      const res = await setConfirmationDate(userId, value || null)
+      if (res.success) {
+        toast.success(value ? 'Confirmation date set — confirmation letter started.' : 'Confirmation date cleared.')
+        router.refresh()
+      } else {
+        toast.error(res.error ?? 'Failed to save')
+      }
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <dt className="text-xs text-muted-foreground">Confirmation Date (manual)</dt>
+      <dd className="flex items-center gap-2">
+        <Input
+          type="date"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          className="h-8 max-w-[160px]"
+        />
+        <Button size="sm" onClick={save} disabled={pending}>
+          {pending ? 'Saving…' : 'Save'}
+        </Button>
+      </dd>
+      <p className="text-xs text-muted-foreground">
+        Setting this starts the confirmation-letter flow (HR review → boss signs → sent on the date).
+      </p>
     </div>
   )
 }

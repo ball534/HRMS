@@ -1,9 +1,13 @@
 import { google } from 'googleapis'
 import { Readable } from 'stream'
 
-const SCOPES = ['https://www.googleapis.com/auth/drive']
+// Drive for file storage; documents for the letter-template merge (google-docs.ts).
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/documents',
+]
 
-function getAuth() {
+export function getAuth() {
   const auth = new google.auth.GoogleAuth({
     credentials: {
       client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -19,6 +23,18 @@ function getAuth() {
 
 function getDrive() {
   return google.drive({ version: 'v3', auth: getAuth() })
+}
+
+/**
+ * Whether Google Drive/Docs is configured. Lets letter generation degrade
+ * gracefully on local dev (no creds) instead of throwing.
+ */
+export function isDriveConfigured(): boolean {
+  return Boolean(
+    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
+      process.env.GOOGLE_PRIVATE_KEY &&
+      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+  )
 }
 
 const ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!
@@ -105,6 +121,101 @@ export async function uploadFile(
     fileId: res.data.id!,
     webViewLink: res.data.webViewLink ?? '',
   }
+}
+
+/**
+ * Replace the binary content of an existing Drive file in place.
+ * Keeps the same fileId/webViewLink (used when stamping a signature onto a PDF).
+ */
+export async function updateFileContent(
+  fileId: string,
+  buffer: Buffer,
+  mimeType: string,
+): Promise<{ fileId: string; webViewLink: string }> {
+  const drive = getDrive()
+  const res = await drive.files.update({
+    fileId,
+    media: { mimeType, body: Readable.from(buffer) },
+    fields: 'id, webViewLink',
+    supportsAllDrives: true,
+  })
+  return { fileId: res.data.id!, webViewLink: res.data.webViewLink ?? '' }
+}
+
+/**
+ * Download a Drive file's binary content.
+ */
+export async function downloadFile(fileId: string): Promise<Buffer> {
+  const drive = getDrive()
+  const res = await drive.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'arraybuffer' },
+  )
+  return Buffer.from(res.data as ArrayBuffer)
+}
+
+/**
+ * Find a folder id by path without creating it. Returns null if missing.
+ */
+async function findFolderByPath(path: string[]): Promise<string | null> {
+  const drive = getDrive()
+  let parentId = ROOT_FOLDER_ID
+  for (const name of path) {
+    const res = await drive.files.list({
+      q: `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: 'files(id)',
+      spaces: 'drive',
+    })
+    const found = res.data.files?.[0]?.id
+    if (!found) return null
+    parentId = found
+  }
+  return parentId
+}
+
+/**
+ * Move an employee's folder from /Employees/<name> to /Archived/<name>.
+ * Used when an employee is rejected / terminated — the folder (credentials,
+ * letters, docs) is stored away and no longer surfaced in the normal tree.
+ */
+export async function archiveEmployeeFolder(employeeFolderName: string): Promise<void> {
+  const drive = getDrive()
+  const folderId = await findFolderByPath(['Employees', employeeFolderName])
+  if (!folderId) return // nothing was ever created for this employee
+  const archivedParent = await ensureFolderPath(['Archived'])
+
+  const file = await drive.files.get({ fileId: folderId, fields: 'parents' })
+  const previousParents = (file.data.parents ?? []).join(',')
+  await drive.files.update({
+    fileId: folderId,
+    addParents: archivedParent,
+    removeParents: previousParents,
+    fields: 'id, parents',
+    supportsAllDrives: true,
+  })
+  // Drop cached ids that referenced the old location.
+  folderCache.clear()
+}
+
+/**
+ * A stable, filesystem-safe folder name for an employee.
+ */
+export function getEmployeeFolderName(opts: {
+  firstName: string
+  lastName: string
+  employeeNumber?: string | null
+  id: string
+}): string {
+  const base = `${opts.firstName} ${opts.lastName}`.trim()
+  const suffix = opts.employeeNumber || opts.id.slice(0, 8)
+  return `${base} (${suffix})`.replace(/[\\/:*?"<>|]/g, '-')
+}
+
+/**
+ * Folder where an employee's generated letters are stored.
+ */
+export function getLetterFolderPath(employeeFolderName: string): string[] {
+  return ['Employees', employeeFolderName, 'Letters']
 }
 
 /**

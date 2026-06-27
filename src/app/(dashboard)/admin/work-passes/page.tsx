@@ -41,26 +41,17 @@ export default async function WorkPassesDashboardPage() {
   const dashboard = await getWorkPassDashboard()
 
   const buckets: {
-    key: 'expired' | 'thirty' | 'sixty' | 'ninety' | 'fine'
+    key: 'expired' | 'due' | 'ok'
     title: string
     rows: typeof dashboard.expired
     cls: string
   }[] = [
     { key: 'expired', title: 'Expired', rows: dashboard.expired, cls: 'bg-rose-50 border-rose-200 text-rose-700' },
-    { key: 'thirty', title: 'Expiring in ≤ 30 days', rows: dashboard.thirty, cls: 'bg-rose-50 border-rose-200 text-rose-700' },
-    { key: 'sixty', title: 'Expiring in 31–60 days', rows: dashboard.sixty, cls: 'bg-amber-50 border-amber-200 text-amber-700' },
-    { key: 'ninety', title: 'Expiring in 61–90 days', rows: dashboard.ninety, cls: 'bg-blue-50 border-blue-200 text-blue-700' },
-    { key: 'fine', title: 'OK (more than 90 days out)', rows: dashboard.fine, cls: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+    { key: 'due', title: 'Due for review (within reminder window)', rows: dashboard.due, cls: 'bg-amber-50 border-amber-200 text-amber-700' },
+    { key: 'ok', title: 'OK (outside reminder window)', rows: dashboard.ok, cls: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
   ]
 
-  const counts = {
-    expired: dashboard.expired.length,
-    thirty: dashboard.thirty.length,
-    sixty: dashboard.sixty.length,
-    ninety: dashboard.ninety.length,
-    fine: dashboard.fine.length,
-  }
-  const urgent = counts.expired + counts.thirty
+  const urgent = dashboard.expired.length + dashboard.due.length
 
   return (
     <div className="space-y-6">
@@ -73,7 +64,7 @@ export default async function WorkPassesDashboardPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid gap-3 sm:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-3">
         {buckets.map(b => (
           <div
             key={b.key}
@@ -87,7 +78,7 @@ export default async function WorkPassesDashboardPage() {
 
       {urgent > 0 && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          <strong>{urgent}</strong> pass{urgent === 1 ? '' : 'es'} need urgent action (expired or within 30 days).
+          <strong>{urgent}</strong> pass{urgent === 1 ? '' : 'es'} need action (expired or inside the renewal-reminder window).
         </div>
       )}
 

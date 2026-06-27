@@ -30,11 +30,35 @@ const upsertSchema = z.object({
   userId: z.string().uuid(),
   passType: z.enum(PASS_TYPES),
   passNumber: z.string().optional(),
+  workPermitNumber: z.string().optional(),
+  finNumber: z.string().optional(),
+  applicationDate: z.string().optional(),
+  approvalDate: z.string().optional(),
   issueDate: z.string().optional(),
   expiryDate: z.string().optional(),
   levy: z.coerce.number().optional(),
   notes: z.string().optional(),
 })
+
+/**
+ * Reminder lead time (days before expiry) per pass type:
+ *   - Employment Pass + S Pass: 4 months
+ *   - Work Permit: 2 months
+ *   - other passes: 3 months (sensible default)
+ */
+function reminderLeadDays(passType: string): number {
+  switch (passType) {
+    case 'SG_EMPLOYMENT_PASS':
+    case 'SG_S_PASS':
+    case 'MY_EMPLOYMENT_PASS':
+      return 120
+    case 'SG_WORK_PERMIT':
+    case 'MY_WORK_PERMIT':
+      return 60
+    default:
+      return 90
+  }
+}
 
 export async function upsertWorkPass(
   _state: WorkPassActionState,
@@ -44,10 +68,9 @@ export async function upsertWorkPass(
     const session = await requireRole(['ADMIN'])
 
     const raw = Object.fromEntries(formData.entries())
-    if (raw.passId === '') delete (raw as Record<string, unknown>).passId
-    if (raw.issueDate === '') delete (raw as Record<string, unknown>).issueDate
-    if (raw.expiryDate === '') delete (raw as Record<string, unknown>).expiryDate
-    if (raw.levy === '') delete (raw as Record<string, unknown>).levy
+    for (const k of ['passId', 'issueDate', 'expiryDate', 'levy', 'applicationDate', 'approvalDate']) {
+      if (raw[k] === '') delete (raw as Record<string, unknown>)[k]
+    }
 
     const parsed = upsertSchema.safeParse(raw)
     if (!parsed.success) {
@@ -61,6 +84,10 @@ export async function upsertWorkPass(
         data: {
           passType: data.passType,
           passNumber: data.passNumber ?? null,
+          workPermitNumber: data.workPermitNumber ?? null,
+          finNumber: data.finNumber ?? null,
+          applicationDate: data.applicationDate ? new Date(data.applicationDate) : null,
+          approvalDate: data.approvalDate ? new Date(data.approvalDate) : null,
           issueDate: data.issueDate ? new Date(data.issueDate) : null,
           expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
           levy: data.levy ?? null,
@@ -79,6 +106,10 @@ export async function upsertWorkPass(
           userId: data.userId,
           passType: data.passType,
           passNumber: data.passNumber ?? null,
+          workPermitNumber: data.workPermitNumber ?? null,
+          finNumber: data.finNumber ?? null,
+          applicationDate: data.applicationDate ? new Date(data.applicationDate) : null,
+          approvalDate: data.approvalDate ? new Date(data.approvalDate) : null,
           issueDate: data.issueDate ? new Date(data.issueDate) : null,
           expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
           levy: data.levy ?? null,
@@ -124,53 +155,75 @@ export async function deleteWorkPass(passId: string): Promise<WorkPassActionStat
   }
 }
 
+const PASS_USER_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  country: true,
+  status: true,
+  position: true,
+  department: true,
+  company: true,
+  passportNumber: true,
+  passportExpiry: true,
+} as const
+
+function daysUntil(expiry: Date | null): number | null {
+  if (!expiry) return null
+  const today = new Date()
+  today.setUTCHours(0, 0, 0, 0)
+  return Math.floor((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+}
+
 /**
- * Active users + their currently-active work pass (latest expiry > today),
- * grouped by urgency (expired / 30d / 60d / 90d / fine).
+ * Active users + their work passes, grouped using the *type-specific* reminder
+ * lead time (EP/S Pass = 4 months, Work Permit = 2 months):
+ *   - expired: past expiry
+ *   - due:     inside its reminder window (needs review before renewal)
+ *   - ok:      outside the window
  */
 export async function getWorkPassDashboard() {
   await requireRole(['ADMIN'])
 
   const passes = await db.workPass.findMany({
     where: { passType: { not: 'NONE' } },
-    include: {
-      user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          country: true,
-          status: true,
-          position: true,
-          department: true,
-        },
-      },
-    },
+    include: { user: { select: PASS_USER_SELECT } },
     orderBy: { expiryDate: 'asc' },
   })
 
-  // Group active users only
-  const today = new Date()
-  today.setUTCHours(0, 0, 0, 0)
-  const bucket = (p: (typeof passes)[number]): 'expired' | 'thirty' | 'sixty' | 'ninety' | 'fine' => {
-    if (!p.expiryDate) return 'fine'
-    const diffDays = Math.floor((p.expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-    if (diffDays < 0) return 'expired'
-    if (diffDays <= 30) return 'thirty'
-    if (diffDays <= 60) return 'sixty'
-    if (diffDays <= 90) return 'ninety'
-    return 'fine'
+  const active = passes.filter(p => p.user.status === 'ACTIVE')
+  const bucket = (p: (typeof passes)[number]): 'expired' | 'due' | 'ok' => {
+    const d = daysUntil(p.expiryDate)
+    if (d === null) return 'ok'
+    if (d < 0) return 'expired'
+    if (d <= reminderLeadDays(p.passType)) return 'due'
+    return 'ok'
   }
-  const filtered = passes.filter(p => p.user.status === 'ACTIVE')
 
   return {
-    expired: filtered.filter(p => bucket(p) === 'expired'),
-    thirty: filtered.filter(p => bucket(p) === 'thirty'),
-    sixty: filtered.filter(p => bucket(p) === 'sixty'),
-    ninety: filtered.filter(p => bucket(p) === 'ninety'),
-    fine: filtered.filter(p => bucket(p) === 'fine'),
+    expired: active.filter(p => bucket(p) === 'expired'),
+    due: active.filter(p => bucket(p) === 'due'),
+    ok: active.filter(p => bucket(p) === 'ok'),
   }
+}
+
+/**
+ * Passes whose expiry is exactly `leadDays` away today (one-shot reminder),
+ * plus any already expired. Used by the daily cron to email HR.
+ */
+export async function getWorkPassesForReminder() {
+  const passes = await db.workPass.findMany({
+    where: { passType: { not: 'NONE' }, expiryDate: { not: null }, user: { status: 'ACTIVE' } },
+    include: { user: { select: PASS_USER_SELECT } },
+  })
+
+  return passes.filter(p => {
+    const d = daysUntil(p.expiryDate)
+    if (d === null) return false
+    // Fire on the exact lead-day threshold (single reminder, no repeat spam).
+    return d === reminderLeadDays(p.passType)
+  })
 }
 
 export async function getUserWorkPasses(userId: string) {

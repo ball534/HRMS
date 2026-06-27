@@ -72,6 +72,10 @@ export default async function PersonPage({ params }: Props) {
     dateOfBirth: userForDisplay.dateOfBirth?.toISOString() ?? null,
     startDate: userForDisplay.startDate?.toISOString() ?? null,
     terminatedAt: userForDisplay.terminatedAt?.toISOString() ?? null,
+    passportExpiry: userForDisplay.passportExpiry?.toISOString() ?? null,
+    probationEndDate: userForDisplay.probationEndDate?.toISOString() ?? null,
+    confirmationDate: userForDisplay.confirmationDate?.toISOString() ?? null,
+    folderArchivedAt: userForDisplay.folderArchivedAt?.toISOString() ?? null,
     createdAt: userForDisplay.createdAt.toISOString(),
     updatedAt: userForDisplay.updatedAt.toISOString(),
   }
@@ -117,11 +121,21 @@ export default async function PersonPage({ params }: Props) {
     id: p.id,
     passType: p.passType,
     passNumber: p.passNumber,
+    workPermitNumber: p.workPermitNumber,
+    finNumber: p.finNumber,
+    applicationDate: p.applicationDate?.toISOString() ?? null,
+    approvalDate: p.approvalDate?.toISOString() ?? null,
     issueDate: p.issueDate?.toISOString() ?? null,
     expiryDate: p.expiryDate?.toISOString() ?? null,
     levy: p.levy?.toString() ?? null,
     notes: p.notes,
   }))
+
+  const employeeForPass = {
+    passportNumber: user.passportNumber,
+    passportExpiry: user.passportExpiry?.toISOString() ?? null,
+    company: user.company,
+  }
 
   return (
     <div className="space-y-6">
@@ -134,7 +148,9 @@ export default async function PersonPage({ params }: Props) {
         leaveAuditLogs={serializedAuditLogs}
         currentYear={currentYear}
       />
-      {isAdmin && <WorkPassManager userId={id} passes={serializedWorkPasses} />}
+      {isAdmin && (
+        <WorkPassManager userId={id} passes={serializedWorkPasses} employee={employeeForPass} />
+      )}
     </div>
   )
 }

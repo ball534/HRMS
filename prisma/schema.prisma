@@ -32,6 +32,7 @@ enum UserStatus {
   ACTIVE
   INACTIVE
   TERMINATED
+  REJECTED // offer rejected / candidate declined — folder gets archived
 }
 
 enum Country {
@@ -89,6 +90,15 @@ enum AuditAction {
   BLACKOUT_CREATED
   BLACKOUT_UPDATED
   BLACKOUT_DELETED
+  EMPLOYMENT_LETTER_GENERATED
+  CONFIRMATION_LETTER_GENERATED
+  LETTER_REVIEWED
+  LETTER_SIGNED
+  LETTER_REJECTED
+  LETTER_SENT
+  LETTER_REMINDER_SENT
+  CONFIRMATION_DATE_SET
+  EMPLOYEE_FOLDER_ARCHIVED
 }
 
 enum DocumentScope {
@@ -118,6 +128,7 @@ enum AuditEntityType {
   REWARD_ALLOCATION
   WORK_PASS
   BLACKOUT
+  EMPLOYMENT_LETTER
 }
 
 enum HalfDayOption {
@@ -241,6 +252,26 @@ enum WorkPassType {
 }
 
 // ============================================================
+// Employment / confirmation letters
+// ============================================================
+
+enum LetterType {
+  EMPLOYMENT   // offer / employment letter, auto-drafted on hire
+  CONFIRMATION // post-probation confirmation letter
+}
+
+// Lifecycle: a draft is auto-generated → HR reviews → approving officer
+// signs → PDF saved to Drive → (confirmation letters) sent via Lark.
+enum LetterStatus {
+  PENDING_REVIEW    // auto-generated draft, waiting for HR to review
+  PENDING_SIGNATURE // HR approved, waiting for the approving officer to sign
+  SIGNED            // officer signed; PDF saved to the employee folder
+  SENT              // delivered to the employee (confirmation letters, via Lark)
+  REJECTED          // rejected at review or signing
+  OVERDUE           // confirmation letter not sent by its due date
+}
+
+// ============================================================
 // Models
 // ============================================================
 
@@ -255,6 +286,14 @@ model User {
   dateOfBirth        DateTime?
   nationality        String?
   profilePhotoUrl    String?
+
+  // Identity / HR records (added for the employment-letter + work-pass flows)
+  employeeNumber     String?        @unique // human-facing "Employee ID" entered by HR
+  nric               String?        // SG NRIC (locals); foreigners use FIN on the work pass
+  passportNumber     String?
+  passportExpiry     DateTime?
+  company            String?        // legal entity the employee belongs to (pulled into work-pass view)
+
   position           String?
   department         String?
   employmentType     EmploymentType @default(EMPLOYEE)
@@ -262,12 +301,20 @@ model User {
   hourlyRate         Decimal?       @db.Decimal(19, 4)
   normalDailyHours   Decimal?       @db.Decimal(5, 2)
   startDate          DateTime?
+
+  // Probation / confirmation. probationEndDate is auto-computed from
+  // startDate + probationMonths; confirmationDate is entered manually by HR.
+  probationMonths    Int?           @default(3)
+  probationEndDate   DateTime?
+  confirmationDate   DateTime?
+
   reportingManagerId String?
   reportingManager   User?          @relation("ReportsTo", fields: [reportingManagerId], references: [id])
   directReports      User[]         @relation("ReportsTo")
   role               Role           @default(EMPLOYEE)
   status             UserStatus     @default(ACTIVE)
   terminatedAt       DateTime?
+  folderArchivedAt   DateTime?      // set when the Drive folder is archived (rejected/terminated)
   mustChangePassword Boolean        @default(true)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
@@ -298,6 +345,11 @@ model User {
   createdRewardCycles    RewardCycle[]      @relation("RewardCycleCreator")
 
   workPasses             WorkPass[]
+
+  employmentLetters      EmploymentLetter[] @relation("EmployeeLetters")
+  letterReviews          EmploymentLetter[] @relation("LetterReviewers")
+  letterApprovals        EmploymentLetter[] @relation("LetterApprovers")
+  letterRejections       EmploymentLetter[] @relation("LetterRejecters")
 
   learningLessons        LearningLessonProgress[]
   learningTests          LearningTestProgress[]
@@ -694,6 +746,10 @@ model WorkPass {
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   passType    WorkPassType
   passNumber  String?       // optional; some users may have multiple passes over time
+  workPermitNumber String?  // Work Permit No. (distinct from the generic pass number)
+  finNumber   String?       // FIN (foreign worker identification number)
+  applicationDate DateTime?
+  approvalDate    DateTime?
   issueDate   DateTime?
   expiryDate  DateTime?     // null = no expiry (e.g. NONE)
   levy        Decimal?      @db.Decimal(19, 4) // monthly levy for foreign workers, optional
@@ -703,6 +759,56 @@ model WorkPass {
 
   @@index([userId])
   @@index([expiryDate])
+}
+
+// ============================================================
+// Employment / confirmation letters
+//   Auto-drafted on hire (EMPLOYMENT) or post-probation (CONFIRMATION),
+//   reviewed by HR, signed by a per-letter approving officer, the PDF
+//   stored in the employee's Drive folder, and (for confirmation letters)
+//   delivered via the notification adapter (Lark).
+// ============================================================
+
+model EmploymentLetter {
+  id                 String       @id @default(uuid())
+  employeeId         String
+  employee           User         @relation("EmployeeLetters", fields: [employeeId], references: [id], onDelete: Cascade)
+  type               LetterType   @default(EMPLOYMENT)
+  status             LetterStatus @default(PENDING_REVIEW)
+
+  // HR review of the auto-generated draft
+  reviewedById       String?
+  reviewedBy         User?        @relation("LetterReviewers", fields: [reviewedById], references: [id])
+  reviewedAt         DateTime?
+
+  // Approving officer chosen per-letter; signs via the in-app pad
+  approvingOfficerId String?
+  approvingOfficer   User?        @relation("LetterApprovers", fields: [approvingOfficerId], references: [id])
+  signatureDataUrl   String?      // drawn signature PNG (data URL), embedded into the PDF
+  signedAt           DateTime?
+
+  // Rejection (at review or signing)
+  rejectedById       String?
+  rejectedBy         User?        @relation("LetterRejecters", fields: [rejectedById], references: [id])
+  rejectedAt         DateTime?
+  rejectionReason    String?
+
+  // Generated PDF in Google Drive
+  driveFileId        String?
+  driveWebViewLink   String?
+
+  // Delivery + scheduling (mainly confirmation letters)
+  dueDate            DateTime?    // date the letter is due to go out (= confirmationDate)
+  sentAt             DateTime?
+  lastReminderAt     DateTime?    // drives "every 2 days until signed" nudges
+  overdue            Boolean      @default(false)
+
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@index([status, type])
+  @@index([employeeId])
+  @@index([approvingOfficerId, status])
 }
 
 // ============================================================

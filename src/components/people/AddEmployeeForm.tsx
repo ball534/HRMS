@@ -77,6 +77,40 @@ export function AddEmployeeForm({ managers }: Props) {
         </div>
       </div>
 
+      {/* Identity & Records */}
+      <div>
+        <h2 className="mb-4 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Identity &amp; Records
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="employeeNumber">Employee ID</Label>
+            <Input id="employeeNumber" name="employeeNumber" placeholder="e.g. IORA-0042" className="mt-1" />
+            <FieldError errors={state.errors} name="employeeNumber" />
+          </div>
+          <div>
+            <Label htmlFor="company">Company</Label>
+            <Input id="company" name="company" placeholder="Legal entity" className="mt-1" />
+            <FieldError errors={state.errors} name="company" />
+          </div>
+          <div>
+            <Label htmlFor="nric">NRIC</Label>
+            <Input id="nric" name="nric" placeholder="SG NRIC (locals)" className="mt-1" />
+            <FieldError errors={state.errors} name="nric" />
+          </div>
+          <div>
+            <Label htmlFor="passportNumber">Passport No.</Label>
+            <Input id="passportNumber" name="passportNumber" className="mt-1" />
+            <FieldError errors={state.errors} name="passportNumber" />
+          </div>
+          <div>
+            <Label htmlFor="passportExpiry">Passport Expiry</Label>
+            <Input id="passportExpiry" name="passportExpiry" type="date" className="mt-1" />
+            <FieldError errors={state.errors} name="passportExpiry" />
+          </div>
+        </div>
+      </div>
+
       {/* Job Info */}
       <div>
         <h2 className="mb-4 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -127,6 +161,12 @@ export function AddEmployeeForm({ managers }: Props) {
             <Label htmlFor="startDate">Start Date</Label>
             <Input id="startDate" name="startDate" type="date" className="mt-1" />
             <FieldError errors={state.errors} name="startDate" />
+          </div>
+          <div>
+            <Label htmlFor="probationMonths">Probation (months)</Label>
+            <Input id="probationMonths" name="probationMonths" type="number" min={0} max={24} defaultValue={3} className="mt-1" />
+            <p className="mt-1 text-xs text-muted-foreground">Probation end is auto-computed from start date.</p>
+            <FieldError errors={state.errors} name="probationMonths" />
           </div>
           <div>
             <Label htmlFor="role">Role *</Label>

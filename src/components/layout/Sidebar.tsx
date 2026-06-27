@@ -19,6 +19,7 @@ import {
   IdCard,
   GraduationCap,
   LineChart,
+  FileSignature,
 } from 'lucide-react'
 import {
   Sidebar as ShadcnSidebar,
@@ -69,6 +70,7 @@ export function Sidebar({ role, isPartTime, hasDirectReports }: Props) {
         { href: '/holidays', label: 'Holidays', icon: CalendarDays },
         { href: '/admin/leave', label: 'Leave Management', icon: Settings },
         { href: '/admin/blackouts', label: 'Blackout Windows', icon: CalendarDays },
+        { href: '/admin/letters', label: 'Letters', icon: FileSignature },
         { href: '/admin/work-passes', label: 'Work Passes', icon: IdCard },
         { href: '/payroll', label: 'Payroll', icon: Receipt },
         { href: '/rewards/cycles', label: 'Rewards', icon: Gift },

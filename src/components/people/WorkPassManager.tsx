@@ -13,15 +13,26 @@ type WorkPass = {
   id: string
   passType: string
   passNumber: string | null
+  workPermitNumber: string | null
+  finNumber: string | null
+  applicationDate: string | null
+  approvalDate: string | null
   issueDate: string | null
   expiryDate: string | null
   levy: string | null
   notes: string | null
 }
 
+type EmployeePassInfo = {
+  passportNumber: string | null
+  passportExpiry: string | null
+  company: string | null
+}
+
 type Props = {
   userId: string
   passes: WorkPass[]
+  employee: EmployeePassInfo
 }
 
 const PASS_TYPE_LABEL: Record<string, string> = {
@@ -68,7 +79,7 @@ function expiryPill(d: string | null) {
   return { label: `${days}d left`, cls: 'bg-emerald-50 text-emerald-700' }
 }
 
-export function WorkPassManager({ userId, passes }: Props) {
+export function WorkPassManager({ userId, passes, employee }: Props) {
   const router = useRouter()
   const [state, formAction, isPending] = useActionState(upsertWorkPass, initialState)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -107,9 +118,28 @@ export function WorkPassManager({ userId, passes }: Props) {
         )}
       </div>
       <p className="mb-4 text-xs text-muted-foreground">
-        Track foreign-worker permits, S Pass, Employment Pass etc. The system alerts on upcoming
-        expiries (90/60/30 days out).
+        Track foreign-worker permits, S Pass, Employment Pass etc. HR is reminded ahead of expiry —
+        4 months for Employment Pass / S Pass, 2 months for Work Permit.
       </p>
+
+      {/* Pulled from the employee record */}
+      <div className="mb-4 grid gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs sm:grid-cols-3">
+        <div>
+          <span className="text-muted-foreground">Company</span>
+          <div className="font-medium">{employee.company ?? '—'}</div>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Passport No.</span>
+          <div className="font-medium">{employee.passportNumber ?? '—'}</div>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Passport Expiry</span>
+          <div className="font-medium">{fmt(employee.passportExpiry)}</div>
+        </div>
+        <p className="text-muted-foreground sm:col-span-3">
+          Passport &amp; company are pulled from the employee profile — edit them there.
+        </p>
+      </div>
 
       {(showAdd || editing) && (
         <div className="mb-4 rounded-lg border border-border bg-background p-4">
@@ -231,12 +261,51 @@ function PassForm({ userId, existing, formAction, state, isPending, onCancel }: 
           </select>
         </div>
         <div>
-          <Label htmlFor="passNumber">Pass / FIN number</Label>
+          <Label htmlFor="passNumber">Pass number</Label>
           <Input
             id="passNumber"
             name="passNumber"
             defaultValue={existing?.passNumber ?? ''}
             placeholder="e.g. G1234567A"
+            className="mt-1"
+          />
+        </div>
+        <div>
+          <Label htmlFor="workPermitNumber">Work Permit No.</Label>
+          <Input
+            id="workPermitNumber"
+            name="workPermitNumber"
+            defaultValue={existing?.workPermitNumber ?? ''}
+            className="mt-1"
+          />
+        </div>
+        <div>
+          <Label htmlFor="finNumber">FIN</Label>
+          <Input
+            id="finNumber"
+            name="finNumber"
+            defaultValue={existing?.finNumber ?? ''}
+            placeholder="Foreign ID number"
+            className="mt-1"
+          />
+        </div>
+        <div>
+          <Label htmlFor="applicationDate">Application date</Label>
+          <Input
+            id="applicationDate"
+            name="applicationDate"
+            type="date"
+            defaultValue={existing?.applicationDate ? existing.applicationDate.slice(0, 10) : ''}
+            className="mt-1"
+          />
+        </div>
+        <div>
+          <Label htmlFor="approvalDate">Approval date</Label>
+          <Input
+            id="approvalDate"
+            name="approvalDate"
+            type="date"
+            defaultValue={existing?.approvalDate ? existing.approvalDate.slice(0, 10) : ''}
             className="mt-1"
           />
         </div>

@@ -17,11 +17,17 @@ type User = {
   phone?: string | null
   dateOfBirth?: string | null
   nationality?: string | null
+  employeeNumber?: string | null
+  nric?: string | null
+  passportNumber?: string | null
+  passportExpiry?: string | null
+  company?: string | null
   position?: string | null
   department?: string | null
   employmentType: string
   country: string
   startDate?: string | null
+  probationMonths?: number | null
   reportingManagerId?: string | null
   role: string
   status: string
@@ -93,10 +99,15 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
               <option value="ACTIVE">Active</option>
               <option value="INACTIVE">Inactive</option>
               <option value="TERMINATED">Terminated</option>
+              <option value="REJECTED">Rejected (offer declined)</option>
             </select>
             {state.errors?.status && (
               <p className="mt-1 text-xs text-rose-600">{state.errors.status[0]}</p>
             )}
+            <p className="mt-2 text-xs text-muted-foreground">
+              Setting this to <strong>Terminated</strong> or <strong>Rejected</strong> archives the
+              employee&apos;s document folder.
+            </p>
           </div>
 
           {/* Name */}
@@ -190,7 +201,7 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
             </select>
           </div>
 
-          {/* Dates */}
+          {/* Dates + probation */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <Label htmlFor="dateOfBirth">Date of Birth</Label>
@@ -200,12 +211,47 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
               <Label htmlFor="startDate">Start Date</Label>
               <Input id="startDate" name="startDate" type="date" defaultValue={formatDateForInput(user.startDate)} className="mt-1" />
             </div>
+            <div>
+              <Label htmlFor="probationMonths">Probation (months)</Label>
+              <Input id="probationMonths" name="probationMonths" type="number" min={0} max={24} defaultValue={user.probationMonths ?? 3} className="mt-1" />
+              <p className="mt-1 text-xs text-muted-foreground">Probation end date is computed from start date.</p>
+            </div>
           </div>
 
           {/* Nationality */}
           <div>
             <Label htmlFor="nationality">Nationality</Label>
             <Input id="nationality" name="nationality" defaultValue={user.nationality ?? ''} className="mt-1" />
+          </div>
+
+          {/* Identity / records */}
+          <div className="rounded-lg border border-border p-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Identity &amp; records</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="employeeNumber">Employee ID</Label>
+                <Input id="employeeNumber" name="employeeNumber" defaultValue={user.employeeNumber ?? ''} className="mt-1" />
+                {state.errors?.employeeNumber && (
+                  <p className="mt-1 text-xs text-rose-600">{state.errors.employeeNumber[0]}</p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="company">Company</Label>
+                <Input id="company" name="company" defaultValue={user.company ?? ''} className="mt-1" />
+              </div>
+              <div>
+                <Label htmlFor="nric">NRIC</Label>
+                <Input id="nric" name="nric" defaultValue={user.nric ?? ''} className="mt-1" />
+              </div>
+              <div>
+                <Label htmlFor="passportNumber">Passport No.</Label>
+                <Input id="passportNumber" name="passportNumber" defaultValue={user.passportNumber ?? ''} className="mt-1" />
+              </div>
+              <div>
+                <Label htmlFor="passportExpiry">Passport Expiry</Label>
+                <Input id="passportExpiry" name="passportExpiry" type="date" defaultValue={formatDateForInput(user.passportExpiry)} className="mt-1" />
+              </div>
+            </div>
           </div>
 
           {/* Reporting Manager */}
