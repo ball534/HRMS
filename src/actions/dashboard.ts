@@ -2,7 +2,7 @@
 
 import { db } from '@/lib/db'
 
-export type BirthdayEntry = {
+type BirthdayEntry = {
   id: string
   firstName: string
   lastName: string

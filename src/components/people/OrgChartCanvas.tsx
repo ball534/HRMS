@@ -7,7 +7,7 @@ type Props = {
   data: OrgNode[]
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 type D3OrgChartInstance = any
 
 export default function OrgChartCanvas({ data }: Props) {
@@ -22,7 +22,7 @@ export default function OrgChartCanvas({ data }: Props) {
     async function initChart() {
       if (!containerRef.current || !mounted) return
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+
       const d3OrgChart = await import('d3-org-chart')
       const OrgChartClass =
         d3OrgChart.OrgChart ??

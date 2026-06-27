@@ -11,8 +11,6 @@ import {
   carryForwardExpiryFor,
 } from '@/lib/leaveEntitlement'
 
-export { calculateAnnualEntitlement, calculateProRataEntitlement }
-
 const HR_ROLES = ['ADMIN', 'HR']
 
 // ============================================================
@@ -98,7 +96,7 @@ export async function getOrCreateBalance(
   return refreshed ?? upserted
 }
 
-export async function initAllBalances(userId: string, year: number) {
+async function initAllBalances(userId: string, year: number) {
   const leaveTypes = await db.leaveType.findMany({ select: { id: true } })
   const balances = await Promise.all(
     leaveTypes.map(lt => getOrCreateBalance(userId, lt.id, year))

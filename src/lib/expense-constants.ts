@@ -24,7 +24,6 @@ export const CURRENCIES = [
 ] as const
 
 export type CurrencyCode = (typeof CURRENCIES)[number]['code']
-export const CURRENCY_CODES = CURRENCIES.map(c => c.code)
 
 // ============================================================
 // Categories

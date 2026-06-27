@@ -246,7 +246,7 @@ export default async function ExpenseDetailPage({ params }: Props) {
                   </div>
                   {receipt.mimeType.startsWith('image/') ? (
                     // Image: render as thumbnail with link
-                    // eslint-disable-next-line @next/next/no-img-element
+
                     <a href={receipt.downloadUrl} target="_blank" rel="noopener noreferrer">
                       <img
                         src={receipt.downloadUrl}

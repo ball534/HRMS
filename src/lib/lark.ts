@@ -20,7 +20,7 @@ import 'server-only'
 // fall back to email (see notifications.ts).
 // ============================================================
 
-export type LarkRecipient = { email: string; larkUserId?: string }
+type LarkRecipient = { email: string; larkUserId?: string }
 
 export type LarkMessage = {
   to: LarkRecipient

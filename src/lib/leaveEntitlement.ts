@@ -58,7 +58,7 @@ export function carryForwardExpiryFor(year: number): Date {
  * Compute the carryover that has not yet expired.
  * If `now` is past the expiry date, return 0 — the carryover is dead.
  */
-export function effectiveCarryForward(
+function effectiveCarryForward(
   carryForward: number,
   carryForwardExpiresAt: Date | null,
   now: Date = new Date()
@@ -72,7 +72,7 @@ export function effectiveCarryForward(
  * Pick the authoritative base entitlement: HR's manual override (if set)
  * trumps the auto-calculated value.
  */
-export function effectiveEntitlement(
+function effectiveEntitlement(
   entitlement: number,
   entitlementOverride: number | null
 ): number {

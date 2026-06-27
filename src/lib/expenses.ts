@@ -9,11 +9,8 @@ import { db } from '@/lib/db'
 // Re-export pure constants for server-side convenience
 // Client components must import from '@/lib/expense-constants' directly.
 export {
-  CURRENCIES,
-  CURRENCY_CODES,
   EXPENSE_CATEGORIES,
   formatCurrency,
-  type CurrencyCode,
 } from '@/lib/expense-constants'
 
 // ============================================================

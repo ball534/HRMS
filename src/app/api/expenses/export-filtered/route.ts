@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   const from = params.get('from') || ''
   const to = params.get('to') || ''
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const where: Record<string, any> = {}
 
   if (status) {

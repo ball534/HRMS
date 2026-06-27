@@ -17,7 +17,7 @@ export type ExpenseActionState = {
   expenseId?: string
 }
 
-export type UploadedReceipt = {
+type UploadedReceipt = {
   key: string
   fileName: string
   fileSize: number
@@ -65,7 +65,7 @@ const expenseSchema = z.object({
 // saveExpenseDraft
 // ============================================================
 
-export async function saveExpenseDraft(
+async function saveExpenseDraft(
   _state: ExpenseActionState,
   formData: FormData
 ): Promise<ExpenseActionState> {
@@ -188,7 +188,7 @@ export async function saveExpenseDraft(
 // submitExpense
 // ============================================================
 
-export async function submitExpense(
+async function submitExpense(
   _state: ExpenseActionState,
   formData: FormData
 ): Promise<ExpenseActionState> {
@@ -636,7 +636,7 @@ export async function getApprovalExpenses(filters?: ApprovalExpenseFilters) {
   const session = await verifySession()
 
   // Build where clause
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const where: Record<string, any> = {
     status: { in: ['FOR_APPROVAL', 'APPROVED', 'REJECTED', 'REIMBURSED'] },
   }

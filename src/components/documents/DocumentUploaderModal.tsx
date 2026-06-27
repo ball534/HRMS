@@ -21,7 +21,7 @@ type Target =
   | { kind: 'COMPANY' }
   | { kind: 'EMPLOYEE'; employeeIds: string[] }
 
-export type UploaderMode = 'hr' | 'employee'
+type UploaderMode = 'hr' | 'employee'
 
 type Props = {
   open: boolean
