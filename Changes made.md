@@ -115,6 +115,28 @@ These need to be provided/decided before letters work end-to-end:
 4. **`CRON_SECRET`** set in the deploy env (Vercel sends it automatically to the cron).
 5. Lark credentials *later*, when you want to switch delivery off email.
 
+### G. Employee profile redesign + Career "Journey" (added 3 Jul 2026)
+
+- **Profile page redesign** (`src/components/people/EmployeeProfile.tsx`): the flat stack of
+  cards/tables was replaced with a **hero header** (larger avatar, status + plain-language
+  probation pill, key-facts strip with icons: email, phone, start date + tenure, country,
+  Employee ID, company, employment type, manager) and **tabs**: *Overview* / *My Journey*
+  (own profile) / *Leave & Time Off* (admin) / *Work Passes* (admin — the work-pass manager
+  moved into a tab via a slot from `people/[id]/page.tsx`).
+- **Career Journey** (`src/components/people/CareerJourney.tsx`): a LinkedIn-style
+  flow-chart timeline an employee sees on their **own** profile — nodes for *Joined*,
+  *position/department changes*, *Confirmed*, *probation end* (derived, dashed when
+  upcoming) and a *today* node, with duration chips on the connectors plus a summary strip
+  (tenure, roles held, milestones).
+- **Data**: new `CareerEvent` model + `CareerEventType` enum (`prisma/schema.prisma`),
+  migration `20260703000000_add_career_events` (backfills a JOINED event per existing user
+  from `startDate`, and a CONFIRMED event where a confirmation date exists). Events are
+  auto-recorded in `src/actions/users.ts`: JOINED on create; POSITION_CHANGE /
+  DEPARTMENT_CHANGE / TERMINATED on update; CONFIRMED kept in sync in
+  `setConfirmationDate`.
+- **Navigation**: sidebar now has a **My Profile** link (`src/components/layout/Sidebar.tsx`)
+  so employees can reach their own profile/journey directly.
+
 ---
 
 ## Part 2 — Decisions & alternatives (for the meeting)

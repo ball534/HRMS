@@ -354,6 +354,8 @@ model User {
   learningLessons        LearningLessonProgress[]
   learningTests          LearningTestProgress[]
   learningSurvey         LearningSurvey?
+
+  careerEvents           CareerEvent[]
 }
 
 model PasswordResetToken {
@@ -888,4 +890,34 @@ model LearningSurvey {
   usefulness  Int
   comment     String?
   submittedAt DateTime @default(now())
+}
+
+// ============================================================
+// Career journey — milestones in an employee's life at the company,
+// rendered as the "Journey" flow on their own profile. Auto-recorded
+// from HR actions (hire, position/department changes, confirmation,
+// termination); effectiveDate drives the timeline order.
+// ============================================================
+
+enum CareerEventType {
+  JOINED
+  POSITION_CHANGE
+  DEPARTMENT_CHANGE
+  CONFIRMED
+  TERMINATED
+}
+
+model CareerEvent {
+  id            String          @id @default(uuid())
+  userId        String
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          CareerEventType
+  title         String          // e.g. "Joined as Sales Associate"
+  detail        String?         // e.g. department / company context
+  fromValue     String?         // previous position/department for change events
+  toValue       String?         // new position/department
+  effectiveDate DateTime
+  createdAt     DateTime        @default(now())
+
+  @@index([userId, effectiveDate])
 }

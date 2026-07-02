@@ -28,6 +28,7 @@ export default async function DashboardLayout({
       <div className="flex min-h-screen w-full">
         <Sidebar
           role={session.role}
+          userId={session.userId}
           isPartTime={user?.employmentType === 'PART_TIME'}
           hasDirectReports={directReportsCount > 0}
         />

@@ -153,6 +153,18 @@ export async function createUser(
     },
   })
 
+  // Journey: starting node of the employee's career timeline.
+  await db.careerEvent.create({
+    data: {
+      userId: user.id,
+      type: 'JOINED',
+      title: `Joined as ${data.position}`,
+      detail: data.department,
+      toValue: data.position,
+      effectiveDate: startDate ?? new Date(),
+    },
+  })
+
   // Auto-draft the employment letter (lands in the HR review queue).
   // Never throws — a letter-generation failure must not block the hire.
   await generateEmploymentLetter(user.id)
@@ -254,6 +266,7 @@ export async function updateUser(
     select: {
       status: true, role: true, email: true, firstName: true, lastName: true,
       employeeNumber: true, folderArchivedAt: true, probationMonths: true, startDate: true,
+      position: true, department: true,
     },
   })
 
@@ -315,6 +328,51 @@ export async function updateUser(
     },
   })
 
+  // Journey: record position/department moves and departure as career events.
+  const journeyEvents: {
+    userId: string
+    type: 'POSITION_CHANGE' | 'DEPARTMENT_CHANGE' | 'TERMINATED'
+    title: string
+    detail?: string | null
+    fromValue?: string | null
+    toValue?: string | null
+    effectiveDate: Date
+  }[] = []
+  if (data.position && data.position !== before.position) {
+    journeyEvents.push({
+      userId: data.id,
+      type: 'POSITION_CHANGE',
+      title: before.position ? `Moved to ${data.position}` : `Became ${data.position}`,
+      detail: data.department ?? null,
+      fromValue: before.position,
+      toValue: data.position,
+      effectiveDate: new Date(),
+    })
+  }
+  if (data.department && data.department !== before.department) {
+    journeyEvents.push({
+      userId: data.id,
+      type: 'DEPARTMENT_CHANGE',
+      title: `Transferred to ${data.department}`,
+      detail: data.position ?? null,
+      fromValue: before.department,
+      toValue: data.department,
+      effectiveDate: new Date(),
+    })
+  }
+  if (data.status === 'TERMINATED' && before.status !== 'TERMINATED') {
+    journeyEvents.push({
+      userId: data.id,
+      type: 'TERMINATED',
+      title: 'Left the company',
+      detail: data.position ?? null,
+      effectiveDate: new Date(),
+    })
+  }
+  if (journeyEvents.length > 0) {
+    await db.careerEvent.createMany({ data: journeyEvents })
+  }
+
   // Archive the Drive folder (best-effort) when the employee is rejected/terminated.
   if (becomingArchived && isDriveConfigured()) {
     try {
@@ -368,6 +426,20 @@ export async function setConfirmationDate(
       entityId: userId,
       details: { confirmationDate: date?.toISOString() ?? null },
     })
+
+    // Journey: keep a single CONFIRMED milestone in sync with the date.
+    await db.careerEvent.deleteMany({ where: { userId, type: 'CONFIRMED' } })
+    if (date) {
+      await db.careerEvent.create({
+        data: {
+          userId,
+          type: 'CONFIRMED',
+          title: 'Confirmed as a permanent employee',
+          detail: 'Completed probation',
+          effectiveDate: date,
+        },
+      })
+    }
 
     // Setting a confirmation date kicks off the confirmation-letter flow
     // (HR review → boss signs → sent on the date). Clearing it leaves any

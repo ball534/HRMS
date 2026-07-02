@@ -2,11 +2,26 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { format } from 'date-fns'
+import { format, differenceInCalendarMonths } from 'date-fns'
 import { toast } from 'sonner'
+import {
+  User as UserIcon,
+  Briefcase,
+  Mail,
+  Phone,
+  IdCard,
+  CalendarClock,
+  Users,
+  Route,
+  Clock,
+  Building2,
+  MapPin,
+  CalendarDays,
+} from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CountryHolidays } from '@/components/people/CountryHolidays'
 import { EditEmployeeForm } from '@/components/people/EditEmployeeForm'
+import { CareerJourney, type CareerEventItem } from '@/components/people/CareerJourney'
 import { adminResetPassword, setConfirmationDate } from '@/actions/users'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -105,6 +120,18 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
+function tenureLabel(startDate: string | null | undefined): string | null {
+  if (!startDate) return null
+  const months = differenceInCalendarMonths(new Date(), new Date(startDate))
+  if (months < 1) return 'New joiner'
+  const yrs = Math.floor(months / 12)
+  const mos = months % 12
+  const parts: string[] = []
+  if (yrs > 0) parts.push(`${yrs} yr${yrs === 1 ? '' : 's'}`)
+  if (mos > 0) parts.push(`${mos} mo`)
+  return parts.join(' ')
+}
+
 type LeaveBalance = {
   id: string
   leaveTypeName: string
@@ -139,11 +166,14 @@ type AuditLogEntry = {
 type Props = {
   user: User
   isAdmin: boolean
+  isSelf?: boolean
   managers: ManagerOption[]
   leaveBalances?: LeaveBalance[]
   leaveRequests?: LeaveRequest[]
   leaveAuditLogs?: AuditLogEntry[]
   currentYear?: number
+  careerEvents?: CareerEventItem[]
+  workPassSlot?: React.ReactNode
 }
 
 const LEAVE_STATUS_STYLES: Record<string, string> = {
@@ -183,11 +213,33 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   BALANCE_ADJUSTED: 'Balance adjusted',
 }
 
-export function EmployeeProfile({ user, isAdmin, managers, leaveBalances = [], leaveRequests = [], leaveAuditLogs = [], currentYear }: Props) {
+type TabId = 'overview' | 'journey' | 'leave' | 'workpasses'
+
+export function EmployeeProfile({
+  user,
+  isAdmin,
+  isSelf = false,
+  managers,
+  leaveBalances = [],
+  leaveRequests = [],
+  leaveAuditLogs = [],
+  currentYear,
+  careerEvents = [],
+  workPassSlot,
+}: Props) {
   const [editing, setEditing] = useState(false)
   const [resettingPassword, setResettingPassword] = useState(false)
+  const [tab, setTab] = useState<TabId>('overview')
   const initials = `${user.firstName[0] ?? ''}${user.lastName[0] ?? ''}`.toUpperCase()
   const avatarColor = getAvatarColor(`${user.firstName}${user.lastName}`)
+  const tenure = tenureLabel(user.startDate)
+
+  const tabs: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'overview', label: 'Overview', icon: UserIcon },
+  ]
+  if (isSelf) tabs.push({ id: 'journey', label: 'My Journey', icon: Route })
+  if (isAdmin) tabs.push({ id: 'leave', label: 'Leave & Time Off', icon: Clock })
+  if (isAdmin && workPassSlot) tabs.push({ id: 'workpasses', label: 'Work Passes', icon: IdCard })
 
   async function handleResetPassword() {
     if (!confirm(`Reset password for ${user.firstName} ${user.lastName}? They will need to change it on next login.`)) return
@@ -206,316 +258,424 @@ export function EmployeeProfile({ user, isAdmin, managers, leaveBalances = [], l
     }
   }
 
+  // Probation standing shown as a plain-language pill in the hero.
+  const probationBadge = (() => {
+    if (user.status !== 'ACTIVE') return null
+    if (user.confirmationDate) {
+      const confirmed = new Date(user.confirmationDate) <= new Date()
+      return {
+        label: confirmed
+          ? `Confirmed ${format(new Date(user.confirmationDate), 'dd MMM yyyy')}`
+          : `Confirmation on ${format(new Date(user.confirmationDate), 'dd MMM yyyy')}`,
+        className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      }
+    }
+    if (user.probationEndDate) {
+      const end = new Date(user.probationEndDate)
+      return end > new Date()
+        ? {
+            label: `On probation until ${format(end, 'dd MMM yyyy')}`,
+            className: 'bg-amber-50 text-amber-700 border-amber-200',
+          }
+        : {
+            label: 'Probation ended — confirmation pending',
+            className: 'bg-orange-50 text-orange-700 border-orange-200',
+          }
+    }
+    return null
+  })()
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start gap-4">
-        {user.profilePhotoUrl ? (
-          <img
-            src={user.profilePhotoUrl}
-            alt={`${user.firstName} ${user.lastName}`}
-            className="h-16 w-16 rounded-full object-cover"
-          />
-        ) : (
-          <div
-            className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-xl font-bold text-white ${avatarColor}`}
-          >
-            {initials}
-          </div>
-        )}
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold">
-            {user.firstName} {user.lastName}
-          </h1>
-          <p className="text-muted-foreground">
-            {user.position ?? 'No position'} {user.department ? `· ${user.department}` : ''}
-          </p>
-          <div className="mt-1 flex items-center gap-2">
-            <span
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[user.status]}`}
+      {/* Hero header */}
+      <div className="rounded-xl bg-card p-6 ring-1 ring-foreground/10">
+        <div className="flex flex-wrap items-start gap-5">
+          {user.profilePhotoUrl ? (
+            <img
+              src={user.profilePhotoUrl}
+              alt={`${user.firstName} ${user.lastName}`}
+              className="h-20 w-20 rounded-full object-cover"
+            />
+          ) : (
+            <div
+              className={`flex h-20 w-20 shrink-0 items-center justify-center rounded-full text-2xl font-bold text-white ${avatarColor}`}
             >
-              {user.status.charAt(0) + user.status.slice(1).toLowerCase()}
-            </span>
-            {user.status === 'TERMINATED' && user.terminatedAt && (
-              <span className="text-xs text-muted-foreground">
-                on {format(new Date(user.terminatedAt), 'dd MMM yyyy')}
+              {initials}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl font-bold">
+              {user.firstName} {user.lastName}
+            </h1>
+            <p className="text-muted-foreground">
+              {user.position ?? 'No position'} {user.department ? `· ${user.department}` : ''}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[user.status]}`}
+              >
+                {user.status.charAt(0) + user.status.slice(1).toLowerCase()}
               </span>
-            )}
+              {user.status === 'TERMINATED' && user.terminatedAt && (
+                <span className="text-xs text-muted-foreground">
+                  on {format(new Date(user.terminatedAt), 'dd MMM yyyy')}
+                </span>
+              )}
+              {isAdmin && probationBadge && (
+                <span
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${probationBadge.className}`}
+                >
+                  {probationBadge.label}
+                </span>
+              )}
+            </div>
           </div>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleResetPassword}
+                disabled={resettingPassword}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/30 transition-colors disabled:opacity-50"
+              >
+                {resettingPassword ? 'Resetting...' : 'Reset Password'}
+              </button>
+              <button
+                onClick={() => setEditing(true)}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/30 transition-colors"
+              >
+                Edit
+              </button>
+            </div>
+          )}
         </div>
-        {isAdmin && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleResetPassword}
-              disabled={resettingPassword}
-              className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/30 transition-colors disabled:opacity-50"
-            >
-              {resettingPassword ? 'Resetting...' : 'Reset Password'}
-            </button>
-            <button
-              onClick={() => setEditing(true)}
-              className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/30 transition-colors"
-            >
-              Edit
-            </button>
-          </div>
-        )}
+
+        {/* Key facts strip */}
+        <div className="mt-5 grid gap-x-6 gap-y-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-4">
+          <HeroFact icon={Mail} label="Email">
+            <a href={`mailto:${user.email}`} className="text-primary hover:underline break-all">
+              {user.email}
+            </a>
+          </HeroFact>
+          <HeroFact icon={Phone} label="Phone">{user.phone ?? '—'}</HeroFact>
+          <HeroFact icon={CalendarDays} label="Start Date">
+            {user.startDate ? (
+              <>
+                {format(new Date(user.startDate), 'MMM d, yyyy')}
+                {tenure && <span className="text-muted-foreground"> · {tenure}</span>}
+              </>
+            ) : (
+              '—'
+            )}
+          </HeroFact>
+          <HeroFact icon={MapPin} label="Country">
+            {COUNTRY_NAMES[user.country] ?? user.country}
+          </HeroFact>
+          {isAdmin && (
+            <HeroFact icon={IdCard} label="Employee ID">{user.employeeNumber ?? '—'}</HeroFact>
+          )}
+          {isAdmin && (
+            <HeroFact icon={Building2} label="Company">{user.company ?? '—'}</HeroFact>
+          )}
+          <HeroFact icon={Briefcase} label="Employment Type">
+            {user.employmentType.charAt(0) + user.employmentType.slice(1).toLowerCase().replace('_', '-')}
+          </HeroFact>
+          <HeroFact icon={Users} label="Reports To">
+            {user.reportingManager ? (
+              <Link href={`/people/${user.reportingManager.id}`} className="text-primary hover:underline">
+                {user.reportingManager.firstName} {user.reportingManager.lastName}
+              </Link>
+            ) : (
+              '—'
+            )}
+          </HeroFact>
+        </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {/* Personal Info */}
-        <Card>
-          <CardHeader className="border-b border-border pb-3">
-            <CardTitle className="text-sm font-medium">Personal Info</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <dl className="space-y-3">
-              <InfoRow label="Full Name" value={`${user.firstName} ${user.lastName}`} />
-              <InfoRow label="Date of Birth" value={user.dateOfBirth ? format(new Date(user.dateOfBirth), 'MMM d, yyyy') : null} />
-              <InfoRow label="Nationality" value={user.nationality} />
-            </dl>
-          </CardContent>
-        </Card>
+      {/* Tabs */}
+      {tabs.length > 1 && (
+        <div className="flex gap-1 border-b border-border">
+          {tabs.map(t => {
+            const Icon = t.icon
+            const active = tab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                  active
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
-        {/* Job Info */}
-        <Card>
-          <CardHeader className="border-b border-border pb-3">
-            <CardTitle className="text-sm font-medium">Job Info</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <dl className="space-y-3">
-              <InfoRow label="Position" value={user.position} />
-              <InfoRow label="Department" value={user.department} />
-              <InfoRow label="Employment Type" value={user.employmentType.charAt(0) + user.employmentType.slice(1).toLowerCase()} />
-              <InfoRow label="Country" value={COUNTRY_NAMES[user.country] ?? user.country} />
-              <InfoRow label="Start Date" value={user.startDate ? format(new Date(user.startDate), 'MMM d, yyyy') : null} />
-              <InfoRow label="Role" value={user.role.charAt(0) + user.role.slice(1).toLowerCase()} />
-              <InfoRow
-                label="Reporting Manager"
-                value={
-                  user.reportingManager ? (
-                    <Link
-                      href={`/people/${user.reportingManager.id}`}
-                      className="text-primary hover:underline"
-                    >
-                      {user.reportingManager.firstName} {user.reportingManager.lastName}
-                    </Link>
-                  ) : null
-                }
-              />
-            </dl>
-          </CardContent>
-        </Card>
-
-        {/* Contact Info */}
-        <Card>
-          <CardHeader className="border-b border-border pb-3">
-            <CardTitle className="text-sm font-medium">Contact Info</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <dl className="space-y-3">
-              <InfoRow label="Email" value={<a href={`mailto:${user.email}`} className="text-primary hover:underline">{user.email}</a>} />
-              <InfoRow label="Phone" value={user.phone} />
-            </dl>
-          </CardContent>
-        </Card>
-
-        {/* Identity & Records (Admin only) */}
-        {isAdmin && (
+      {/* ============ Overview tab ============ */}
+      {tab === 'overview' && (
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           <Card>
             <CardHeader className="border-b border-border pb-3">
-              <CardTitle className="text-sm font-medium">Identity &amp; Records</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4">
-              <dl className="space-y-3">
-                <InfoRow label="Employee ID" value={user.employeeNumber} />
-                <InfoRow label="Company" value={user.company} />
-                <InfoRow label="NRIC" value={user.nric} />
-                <InfoRow label="Passport No." value={user.passportNumber} />
-                <InfoRow
-                  label="Passport Expiry"
-                  value={user.passportExpiry ? format(new Date(user.passportExpiry), 'MMM d, yyyy') : null}
-                />
-              </dl>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Probation & Confirmation (Admin only) */}
-        {isAdmin && (
-          <Card>
-            <CardHeader className="border-b border-border pb-3">
-              <CardTitle className="text-sm font-medium">Probation &amp; Confirmation</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4">
-              <dl className="space-y-3">
-                <InfoRow
-                  label="Probation End (auto)"
-                  value={user.probationEndDate ? format(new Date(user.probationEndDate), 'MMM d, yyyy') : null}
-                />
-                <ConfirmationDateSetter userId={user.id} current={user.confirmationDate ?? null} />
-              </dl>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Upcoming Holidays */}
-        <CountryHolidays country={user.country} />
-
-        {/* Direct Reports */}
-        {user.directReports && user.directReports.length > 0 && (
-          <Card>
-            <CardHeader className="border-b border-border pb-3">
-              <CardTitle className="text-sm font-medium">
-                Direct Reports ({user.directReports.length})
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <UserIcon className="h-4 w-4 text-muted-foreground" /> Personal Info
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-4">
-              <div className="space-y-2">
-                {user.directReports.map((report) => (
-                  <Link
-                    key={report.id}
-                    href={`/people/${report.id}`}
-                    className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted/20 transition-colors"
-                  >
-                    <span className="text-sm font-medium text-primary hover:underline">
-                      {report.firstName} {report.lastName}
-                    </span>
-                    {report.position && (
-                      <span className="text-xs text-muted-foreground">— {report.position}</span>
-                    )}
-                  </Link>
-                ))}
-              </div>
+              <dl className="space-y-3">
+                <InfoRow label="Full Name" value={`${user.firstName} ${user.lastName}`} />
+                <InfoRow label="Date of Birth" value={user.dateOfBirth ? format(new Date(user.dateOfBirth), 'MMM d, yyyy') : null} />
+                <InfoRow label="Nationality" value={user.nationality} />
+              </dl>
             </CardContent>
           </Card>
-        )}
-      </div>
 
-      {/* Leave Balances (Admin only) */}
-      {isAdmin && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Leave Balances ({currentYear})</h2>
-            <Link
-              href="/admin/leave"
-              className="text-sm text-primary hover:underline"
-            >
-              Manage Balances
-            </Link>
-          </div>
-          {leaveBalances.length === 0 ? (
-            <p className="text-sm text-muted-foreground rounded-xl bg-card p-6 ring-1 ring-foreground/10">No leave balances for this year.</p>
-          ) : (
-          <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-4 py-3 font-medium">Leave Type</th>
-                  <th className="px-4 py-3 font-medium text-right">Entitlement</th>
-                  <th className="px-4 py-3 font-medium text-right">Carry Forward</th>
-                  <th className="px-4 py-3 font-medium text-right">Adjustment</th>
-                  <th className="px-4 py-3 font-medium text-right">Used</th>
-                  <th className="px-4 py-3 font-medium text-right">Pending</th>
-                  <th className="px-4 py-3 font-medium text-right">Available</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaveBalances.map(b => (
-                  <tr key={b.id} className="border-b border-border/50 last:border-0">
-                    <td className="px-4 py-3 font-medium">{b.leaveTypeName}</td>
-                    <td className="px-4 py-3 text-right">{b.entitlement}</td>
-                    <td className="px-4 py-3 text-right">{b.carryForward || '—'}</td>
-                    <td className="px-4 py-3 text-right">{b.adjustment || '—'}</td>
-                    <td className="px-4 py-3 text-right">{b.used || '—'}</td>
-                    <td className="px-4 py-3 text-right">{b.pending || '—'}</td>
-                    <td className="px-4 py-3 text-right font-semibold">{b.available}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Card>
+            <CardHeader className="border-b border-border pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <Briefcase className="h-4 w-4 text-muted-foreground" /> Job Info
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <dl className="space-y-3">
+                <InfoRow label="Position" value={user.position} />
+                <InfoRow label="Department" value={user.department} />
+                <InfoRow label="Role" value={user.role.charAt(0) + user.role.slice(1).toLowerCase()} />
+                <InfoRow
+                  label="Reporting Manager"
+                  value={
+                    user.reportingManager ? (
+                      <Link
+                        href={`/people/${user.reportingManager.id}`}
+                        className="text-primary hover:underline"
+                      >
+                        {user.reportingManager.firstName} {user.reportingManager.lastName}
+                      </Link>
+                    ) : null
+                  }
+                />
+              </dl>
+            </CardContent>
+          </Card>
+
+          {isAdmin && (
+            <Card>
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <IdCard className="h-4 w-4 text-muted-foreground" /> Identity &amp; Records
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4">
+                <dl className="space-y-3">
+                  <InfoRow label="Employee ID" value={user.employeeNumber} />
+                  <InfoRow label="Company" value={user.company} />
+                  <InfoRow label="NRIC" value={user.nric} />
+                  <InfoRow label="Passport No." value={user.passportNumber} />
+                  <InfoRow
+                    label="Passport Expiry"
+                    value={user.passportExpiry ? format(new Date(user.passportExpiry), 'MMM d, yyyy') : null}
+                  />
+                </dl>
+              </CardContent>
+            </Card>
           )}
-        </div>
-      )}
 
-      {/* Leave History (Admin only) */}
-      {isAdmin && leaveRequests.length > 0 && (
-        <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Leave History</h2>
-          <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">From</th>
-                  <th className="px-4 py-3 font-medium">To</th>
-                  <th className="px-4 py-3 font-medium text-right">Days</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Approver</th>
-                  <th className="px-4 py-3 font-medium">Requested</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaveRequests.map(r => (
-                  <tr key={r.id} className="border-b border-border/50 last:border-0">
-                    <td className="px-4 py-3 font-medium">{r.leaveTypeName}</td>
-                    <td className="px-4 py-3">{format(new Date(r.startDate), 'dd MMM yyyy')}</td>
-                    <td className="px-4 py-3">{format(new Date(r.endDate), 'dd MMM yyyy')}</td>
-                    <td className="px-4 py-3 text-right">{r.daysCount}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${LEAVE_STATUS_STYLES[r.status] ?? ''}`}>
-                        {r.status.charAt(0) + r.status.slice(1).toLowerCase()}
+          {isAdmin && (
+            <Card>
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" /> Probation &amp; Confirmation
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4">
+                <dl className="space-y-3">
+                  <InfoRow
+                    label="Probation End (auto)"
+                    value={user.probationEndDate ? format(new Date(user.probationEndDate), 'MMM d, yyyy') : null}
+                  />
+                  <ConfirmationDateSetter userId={user.id} current={user.confirmationDate ?? null} />
+                </dl>
+              </CardContent>
+            </Card>
+          )}
+
+          <CountryHolidays country={user.country} />
+
+          {user.directReports && user.directReports.length > 0 && (
+            <Card>
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <Users className="h-4 w-4 text-muted-foreground" /> Direct Reports ({user.directReports.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4">
+                <div className="space-y-2">
+                  {user.directReports.map((report) => (
+                    <Link
+                      key={report.id}
+                      href={`/people/${report.id}`}
+                      className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted/20 transition-colors"
+                    >
+                      <span className="text-sm font-medium text-primary hover:underline">
+                        {report.firstName} {report.lastName}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.approver ?? '—'}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{format(new Date(r.createdAt), 'dd MMM yyyy')}</td>
+                      {report.position && (
+                        <span className="text-xs text-muted-foreground">— {report.position}</span>
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* ============ Journey tab (own profile) ============ */}
+      {tab === 'journey' && isSelf && (
+        <CareerJourney
+          events={careerEvents}
+          user={{
+            firstName: user.firstName,
+            position: user.position,
+            department: user.department,
+            company: user.company,
+            startDate: user.startDate,
+            probationEndDate: user.probationEndDate,
+            confirmationDate: user.confirmationDate,
+            status: user.status,
+          }}
+        />
+      )}
+
+      {/* ============ Leave tab (admin) ============ */}
+      {tab === 'leave' && isAdmin && (
+        <div className="space-y-6">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Leave Balances ({currentYear})</h2>
+              <Link
+                href="/admin/leave"
+                className="text-sm text-primary hover:underline"
+              >
+                Manage Balances
+              </Link>
+            </div>
+            {leaveBalances.length === 0 ? (
+              <p className="text-sm text-muted-foreground rounded-xl bg-card p-6 ring-1 ring-foreground/10">No leave balances for this year.</p>
+            ) : (
+            <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Leave Type</th>
+                    <th className="px-4 py-3 font-medium text-right">Entitlement</th>
+                    <th className="px-4 py-3 font-medium text-right">Carry Forward</th>
+                    <th className="px-4 py-3 font-medium text-right">Adjustment</th>
+                    <th className="px-4 py-3 font-medium text-right">Used</th>
+                    <th className="px-4 py-3 font-medium text-right">Pending</th>
+                    <th className="px-4 py-3 font-medium text-right">Available</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {leaveBalances.map(b => (
+                    <tr key={b.id} className="border-b border-border/50 last:border-0">
+                      <td className="px-4 py-3 font-medium">{b.leaveTypeName}</td>
+                      <td className="px-4 py-3 text-right">{b.entitlement}</td>
+                      <td className="px-4 py-3 text-right">{b.carryForward || '—'}</td>
+                      <td className="px-4 py-3 text-right">{b.adjustment || '—'}</td>
+                      <td className="px-4 py-3 text-right">{b.used || '—'}</td>
+                      <td className="px-4 py-3 text-right">{b.pending || '—'}</td>
+                      <td className="px-4 py-3 text-right font-semibold">{b.available}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            )}
+          </div>
+
+          {leaveRequests.length > 0 && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">Leave History</h2>
+              <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                      <th className="px-4 py-3 font-medium">Type</th>
+                      <th className="px-4 py-3 font-medium">From</th>
+                      <th className="px-4 py-3 font-medium">To</th>
+                      <th className="px-4 py-3 font-medium text-right">Days</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Approver</th>
+                      <th className="px-4 py-3 font-medium">Requested</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaveRequests.map(r => (
+                      <tr key={r.id} className="border-b border-border/50 last:border-0">
+                        <td className="px-4 py-3 font-medium">{r.leaveTypeName}</td>
+                        <td className="px-4 py-3">{format(new Date(r.startDate), 'dd MMM yyyy')}</td>
+                        <td className="px-4 py-3">{format(new Date(r.endDate), 'dd MMM yyyy')}</td>
+                        <td className="px-4 py-3 text-right">{r.daysCount}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${LEAVE_STATUS_STYLES[r.status] ?? ''}`}>
+                            {r.status.charAt(0) + r.status.slice(1).toLowerCase()}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">{r.approver ?? '—'}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{format(new Date(r.createdAt), 'dd MMM yyyy')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            <h2 className="text-lg font-semibold">Leave Audit Log</h2>
+            {leaveAuditLogs.length === 0 ? (
+              <p className="text-sm text-muted-foreground rounded-xl bg-card p-6 ring-1 ring-foreground/10">No audit log entries yet.</p>
+            ) : (
+            <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Date</th>
+                    <th className="px-4 py-3 font-medium">Action</th>
+                    <th className="px-4 py-3 font-medium">By</th>
+                    <th className="px-4 py-3 font-medium">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaveAuditLogs.map(log => (
+                    <tr key={log.id} className="border-b border-border/50 last:border-0">
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                        {format(new Date(log.createdAt), 'dd MMM yyyy HH:mm')}
+                      </td>
+                      <td className="px-4 py-3 font-medium">
+                        {AUDIT_ACTION_LABELS[log.action] ?? log.action}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{log.actor}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs">
+                        {log.details && formatAuditDetails(log.action, log.details)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Leave Audit Log (Admin only) */}
-      {isAdmin && (
-        <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Leave Audit Log</h2>
-          {leaveAuditLogs.length === 0 ? (
-            <p className="text-sm text-muted-foreground rounded-xl bg-card p-6 ring-1 ring-foreground/10">No audit log entries yet.</p>
-          ) : (
-          <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-4 py-3 font-medium">Date</th>
-                  <th className="px-4 py-3 font-medium">Action</th>
-                  <th className="px-4 py-3 font-medium">By</th>
-                  <th className="px-4 py-3 font-medium">Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaveAuditLogs.map(log => (
-                  <tr key={log.id} className="border-b border-border/50 last:border-0">
-                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
-                      {format(new Date(log.createdAt), 'dd MMM yyyy HH:mm')}
-                    </td>
-                    <td className="px-4 py-3 font-medium">
-                      {AUDIT_ACTION_LABELS[log.action] ?? log.action}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{log.actor}</td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">
-                      {log.details && formatAuditDetails(log.action, log.details)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          )}
-        </div>
-      )}
+      {/* ============ Work Passes tab (admin) ============ */}
+      {tab === 'workpasses' && isAdmin && workPassSlot}
 
       {/* Edit Modal */}
       {editing && (
@@ -525,6 +685,26 @@ export function EmployeeProfile({ user, isAdmin, managers, leaveBalances = [], l
           onClose={() => setEditing(false)}
         />
       )}
+    </div>
+  )
+}
+
+function HeroFact({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex items-start gap-2.5 min-w-0">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-sm">{children}</p>
+      </div>
     </div>
   )
 }

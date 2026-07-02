@@ -20,6 +20,7 @@ import {
   GraduationCap,
   LineChart,
   FileSignature,
+  CircleUserRound,
 } from 'lucide-react'
 import {
   Sidebar as ShadcnSidebar,
@@ -34,11 +35,12 @@ import {
 
 type Props = {
   role: string
+  userId: string
   isPartTime: boolean
   hasDirectReports: boolean
 }
 
-export function Sidebar({ role, isPartTime, hasDirectReports }: Props) {
+export function Sidebar({ role, userId, isPartTime, hasDirectReports }: Props) {
   const pathname = usePathname()
   const isAdmin = role === 'ADMIN'
 
@@ -49,6 +51,7 @@ export function Sidebar({ role, isPartTime, hasDirectReports }: Props) {
 
   // HR section
   const hrItems: typeof sections[0]['items'] = [
+    { href: `/people/${userId}`, label: 'My Profile', icon: CircleUserRound },
     { href: '/people', label: 'People', icon: Users },
     { href: '/team-calendar', label: 'Team Calendar', icon: Calendar },
     { href: '/leave', label: 'Time Off', icon: Clock },
@@ -101,7 +104,9 @@ export function Sidebar({ role, isPartTime, hasDirectReports }: Props) {
                 const isActive =
                   item.href === '/dashboard'
                     ? pathname === '/dashboard'
-                    : pathname.startsWith(item.href)
+                    : item.href === '/people'
+                      ? pathname.startsWith('/people') && pathname !== `/people/${userId}`
+                      : pathname.startsWith(item.href)
 
                 return (
                   <SidebarMenuItem key={item.href}>

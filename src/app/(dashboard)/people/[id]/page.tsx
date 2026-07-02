@@ -13,6 +13,7 @@ export default async function PersonPage({ params }: Props) {
   const { id } = await params
   const session = await verifySession()
   const isAdmin = session.role === 'ADMIN'
+  const isSelf = session.userId === id
   const currentYear = new Date().getFullYear()
 
   const [user, managers, leaveBalances, leaveRequests, auditLogs] = await Promise.all([
@@ -137,20 +138,39 @@ export default async function PersonPage({ params }: Props) {
     company: user.company,
   }
 
+  // Career journey events — shown on the "My Journey" tab of one's own profile.
+  const careerEvents = isSelf
+    ? await db.careerEvent.findMany({
+        where: { userId: id },
+        orderBy: { effectiveDate: 'asc' },
+      })
+    : []
+  const serializedCareerEvents = careerEvents.map(e => ({
+    id: e.id,
+    type: e.type,
+    title: e.title,
+    detail: e.detail,
+    fromValue: e.fromValue,
+    toValue: e.toValue,
+    effectiveDate: e.effectiveDate.toISOString(),
+  }))
+
   return (
-    <div className="space-y-6">
-      <EmployeeProfile
-        user={serialized}
-        isAdmin={isAdmin}
-        managers={managers}
-        leaveBalances={serializedBalances}
-        leaveRequests={serializedRequests}
-        leaveAuditLogs={serializedAuditLogs}
-        currentYear={currentYear}
-      />
-      {isAdmin && (
-        <WorkPassManager userId={id} passes={serializedWorkPasses} employee={employeeForPass} />
-      )}
-    </div>
+    <EmployeeProfile
+      user={serialized}
+      isAdmin={isAdmin}
+      isSelf={isSelf}
+      managers={managers}
+      leaveBalances={serializedBalances}
+      leaveRequests={serializedRequests}
+      leaveAuditLogs={serializedAuditLogs}
+      currentYear={currentYear}
+      careerEvents={serializedCareerEvents}
+      workPassSlot={
+        isAdmin ? (
+          <WorkPassManager userId={id} passes={serializedWorkPasses} employee={employeeForPass} />
+        ) : undefined
+      }
+    />
   )
 }
