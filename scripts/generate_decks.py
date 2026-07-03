@@ -339,7 +339,7 @@ ADMIN_SLIDES: List[Slide] = [
             "Forgot password? Click the link, and you'll get a reset email via Resend.",
             "The system enforces secure session cookies that expire after a period of inactivity.",
         ],
-        note="On first sign-in for the demo: jin@company.com / changeme123",
+        note="On first sign-in for the demo: jin@company.com / test123",
     ),
     # SECTION: Dashboard + people
     Slide(title="Dashboard & People", subtitle="Day-to-day overview and the employee directory.", section=True),

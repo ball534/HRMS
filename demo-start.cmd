@@ -13,5 +13,15 @@ if errorlevel 1 (
 )
 
 cd /d "%~dp0"
-echo Starting HRMS at http://localhost:3000  (admin: jin@company.com / changeme123)
+echo.
+echo ==============================================================
+echo  HRMS demo starting at http://localhost:3000
+echo.
+echo  Demo logins (password for all: test123)
+echo    Admin     jin@company.com
+echo    HR        grace@iora.demo
+echo    Manager   sara@iora.demo    (signer/boss)
+echo    Employee  weiling@iora.demo (rich Journey data)
+echo ==============================================================
+echo.
 npm run dev

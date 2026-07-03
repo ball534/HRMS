@@ -75,7 +75,7 @@ async function main() {
   console.log('Seeding database...')
 
   // Seed default admin user
-  const passwordHash = await bcrypt.hash('changeme123', 12)
+  const passwordHash = await bcrypt.hash('test123', 12)
   await prisma.user.upsert({
     where: { email: 'jin@company.com' },
     update: {},
@@ -91,7 +91,7 @@ async function main() {
       employmentType: 'EMPLOYEE',
     },
   })
-  console.log('Created default admin user: jin@company.com (password: changeme123)')
+  console.log('Created default admin user: jin@company.com (password: test123)')
 
   // Seed holidays
   const sgCount = await seedHolidays('SG', SG_HOLIDAYS_2026)

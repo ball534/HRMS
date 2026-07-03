@@ -11,7 +11,7 @@
  * Idempotent: re-running deletes and recreates all `@iora.demo` users.
  * All dates are relative to "today" so the demo always looks current.
  *
- * Every demo login uses password `changeme123` (no forced change).
+ * Every demo login uses password `test123` (no forced change).
  */
 import { PrismaClient } from '../src/generated/prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
@@ -22,7 +22,7 @@ const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
 const prisma = new PrismaClient({ adapter })
 
 const now = new Date()
-const PASSWORD = 'changeme123'
+const PASSWORD = 'test123'
 
 async function main() {
   console.log('Seeding demo company...')
@@ -621,7 +621,7 @@ async function main() {
   })
   console.log('Created learning progress (completed, mid-journey, new, locked-out)')
 
-  console.log('\nDemo seed complete. Logins (password: changeme123):')
+  console.log('\nDemo seed complete. Logins (password: test123):')
   console.log('  Admin/HR   -> jin@company.com')
   console.log('  Boss/signer-> sara@iora.demo')
   console.log('  Employee   -> weiling@iora.demo (rich Journey + LMS progress)')

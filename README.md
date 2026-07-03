@@ -123,7 +123,7 @@ To stop the database later: `..\.localdb\pgsql\bin\pg_ctl -D ..\.localdb\data st
 
 ## Demo data & logins
 
-All demo passwords are **`changeme123`** (no forced password change).
+All demo passwords are **`test123`** (no forced password change).
 
 | Login | Role | Use it to show |
 | --- | --- | --- |
