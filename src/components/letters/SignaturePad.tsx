@@ -33,7 +33,14 @@ export function SignaturePad({ onConfirm, onCancel, pending }: Props) {
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.strokeStyle = '#111827'
+    ctx.fillStyle = '#111827'
     for (const stroke of all) {
+      if (stroke.length === 0) continue
+      // start every stroke with a dot so taps and zero-length strokes stay
+      // visible (a zero-length line renders as nothing)
+      ctx.beginPath()
+      ctx.arc(stroke[0].x, stroke[0].y, ctx.lineWidth / 2, 0, Math.PI * 2)
+      ctx.fill()
       if (stroke.length < 2) continue
       ctx.beginPath()
       ctx.moveTo(stroke[0].x, stroke[0].y)
@@ -47,14 +54,21 @@ export function SignaturePad({ onConfirm, onCancel, pending }: Props) {
   }, [strokes, redraw])
 
   function pointFrom(e: React.PointerEvent<HTMLCanvasElement>): Point {
-    const rect = e.currentTarget.getBoundingClientRect()
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    // The bitmap is a fixed 500x180 while CSS stretches the element to the
+    // container, so pointer coords must be scaled from CSS px to bitmap px.
+    const canvas = e.currentTarget
+    const rect = canvas.getBoundingClientRect()
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    }
   }
 
   function handleDown(e: React.PointerEvent<HTMLCanvasElement>) {
     e.currentTarget.setPointerCapture(e.pointerId)
     drawing.current = true
     current.current = [pointFrom(e)]
+    redraw([...strokes, current.current])
   }
 
   function handleMove(e: React.PointerEvent<HTMLCanvasElement>) {
@@ -67,10 +81,13 @@ export function SignaturePad({ onConfirm, onCancel, pending }: Props) {
   function handleUp() {
     if (!drawing.current) return
     drawing.current = false
-    if (current.current.length > 1) {
-      setStrokes(prev => [...prev, current.current])
-    }
+    // capture before resetting the ref — the state updater runs after this
+    // handler returns, and must not see the emptied array
+    const stroke = current.current
     current.current = []
+    if (stroke.length > 0) {
+      setStrokes(prev => [...prev, stroke])
+    }
   }
 
   function undo() {
@@ -100,7 +117,7 @@ export function SignaturePad({ onConfirm, onCancel, pending }: Props) {
           onPointerDown={handleDown}
           onPointerMove={handleMove}
           onPointerUp={handleUp}
-          onPointerLeave={handleUp}
+          onPointerCancel={handleUp}
         />
       </div>
       <p className="text-xs text-muted-foreground">Draw your signature above.</p>

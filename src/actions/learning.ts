@@ -22,6 +22,9 @@ const TEST_IDS = ['test1', 'test2', 'test3'] as const
 export type LearningSeed = {
   userName: string
   role: 'admin' | 'user'
+  // enrollment (start-of-employment) in ms — drives week-based lesson unlocks
+  enrolledAt: number
+  // keyed by onboarding lesson id ("lesson1"..) or module lesson id
   progress: Record<string, { parts: { slides?: boolean; pdf?: boolean; video?: boolean } }>
   tests: Record<
     string,
@@ -79,7 +82,7 @@ export async function getLearningSeed(): Promise<LearningSeed | null> {
   const [user, lessons, tests, survey] = await Promise.all([
     db.user.findUnique({
       where: { id: session.userId },
-      select: { firstName: true, lastName: true, role: true },
+      select: { firstName: true, lastName: true, role: true, startDate: true, createdAt: true },
     }),
     db.learningLessonProgress.findMany({ where: { userId: session.userId } }),
     db.learningTestProgress.findMany({ where: { userId: session.userId } }),
@@ -108,6 +111,7 @@ export async function getLearningSeed(): Promise<LearningSeed | null> {
   return {
     userName: user ? `${user.firstName} ${user.lastName}` : 'Learner',
     role: user?.role === 'ADMIN' ? 'admin' : 'user',
+    enrolledAt: (user?.startDate ?? user?.createdAt ?? new Date()).getTime(),
     progress,
     tests: testsMap,
     survey: survey
@@ -137,18 +141,43 @@ export async function saveLearningProgress(
   const { progress, tests, survey } = parsed.data
 
   // Existing rows so we don't keep moving completedAt forward on every sync.
-  const existingLessons = await db.learningLessonProgress.findMany({
-    where: { userId },
-  })
+  const [existingLessons, moduleLessons, moduleMaterials] = await Promise.all([
+    db.learningLessonProgress.findMany({ where: { userId } }),
+    db.learningModuleLesson.findMany({ select: { id: true } }),
+    db.learningMaterial.findMany({ select: { key: true } }),
+  ])
   const existingByLesson = new Map(existingLessons.map((l) => [l.lessonId, l]))
 
+  // Module lessons only have the parts an admin actually uploaded, so their
+  // "all done" check is against the material keys present for that lesson.
+  const PART_BY_KIND: Record<string, 'slides' | 'pdf' | 'video'> = {
+    pptx: 'slides',
+    pdf: 'pdf',
+    video: 'video',
+  }
+  const modulePartsById = new Map<string, ('slides' | 'pdf' | 'video')[]>()
+  for (const { id } of moduleLessons) modulePartsById.set(id, [])
+  for (const { key } of moduleMaterials) {
+    const [kind, ref] = key.split(':')
+    const parts = modulePartsById.get(ref)
+    if (parts && PART_BY_KIND[kind]) parts.push(PART_BY_KIND[kind])
+  }
+
+  const lessonIds = [
+    ...LESSON_IDS.filter((id) => progress[id]),
+    ...[...modulePartsById.keys()].filter((id) => progress[id]),
+  ]
+
   await Promise.all([
-    ...LESSON_IDS.filter((id) => progress[id]).map((lessonId) => {
+    ...lessonIds.map((lessonId) => {
       const parts = progress[lessonId].parts
       const slidesDone = !!parts.slides
       const pdfDone = !!parts.pdf
       const videoDone = !!parts.video
-      const allDone = slidesDone && pdfDone && videoDone
+      const modParts = modulePartsById.get(lessonId)
+      const allDone = modParts
+        ? modParts.length > 0 && modParts.every((p) => !!parts[p])
+        : slidesDone && pdfDone && videoDone
       const prior = existingByLesson.get(lessonId)
       const completedAt = allDone ? prior?.completedAt ?? new Date() : null
       return db.learningLessonProgress.upsert({
@@ -202,6 +231,125 @@ export async function saveLearningProgress(
     })
   }
 
+  return { ok: true }
+}
+
+// ============================================================
+// listLearningMaterials — admin content-manager view of uploaded
+// lesson material overrides (writes go through /api/learning/materials)
+// ============================================================
+
+export type MaterialRow = {
+  key: string
+  kind: string
+  fileName: string | null
+  value: string | null
+  fileSize: number | null
+  updatedAt: string
+  uploadedBy: string
+}
+
+export async function listLearningMaterials(): Promise<MaterialRow[]> {
+  await requireRole(['ADMIN'])
+
+  const rows = await db.learningMaterial.findMany({
+    include: { uploadedBy: { select: { firstName: true, lastName: true } } },
+    orderBy: { key: 'asc' },
+  })
+
+  return rows.map((m) => ({
+    key: m.key,
+    kind: m.kind,
+    fileName: m.fileName,
+    // only the video URL is surfaced; CSV text stays server-side
+    value: m.kind === 'video' ? m.text : null,
+    fileSize: m.fileSize,
+    updatedAt: m.updatedAt.toISOString(),
+    uploadedBy: `${m.uploadedBy.firstName} ${m.uploadedBy.lastName}`,
+  }))
+}
+
+// ============================================================
+// Module lessons — admin-created lessons shown in the Learning Hub's
+// "Module lessons" tab (unlocked after the onboarding certificate)
+// ============================================================
+
+export type ModuleLessonRow = {
+  id: string
+  title: string
+  summary: string | null
+  position: number
+  createdBy: string
+  createdAt: string
+}
+
+export async function listModuleLessons(): Promise<ModuleLessonRow[]> {
+  await requireRole(['ADMIN'])
+
+  const rows = await db.learningModuleLesson.findMany({
+    include: { createdBy: { select: { firstName: true, lastName: true } } },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+  })
+  return rows.map((m) => ({
+    id: m.id,
+    title: m.title,
+    summary: m.summary,
+    position: m.position,
+    createdBy: `${m.createdBy.firstName} ${m.createdBy.lastName}`,
+    createdAt: m.createdAt.toISOString(),
+  }))
+}
+
+export async function createModuleLesson(data: {
+  title: string
+  summary?: string
+}): Promise<{ ok: boolean; lesson?: ModuleLessonRow; error?: string }> {
+  const session = await requireRole(['ADMIN'])
+
+  const title = data.title?.trim()
+  if (!title) return { ok: false, error: 'Title is required' }
+
+  const last = await db.learningModuleLesson.findFirst({
+    orderBy: { position: 'desc' },
+    select: { position: true },
+  })
+  const row = await db.learningModuleLesson.create({
+    data: {
+      title,
+      summary: data.summary?.trim() || null,
+      position: (last?.position ?? 0) + 1,
+      createdById: session.userId,
+    },
+    include: { createdBy: { select: { firstName: true, lastName: true } } },
+  })
+  return {
+    ok: true,
+    lesson: {
+      id: row.id,
+      title: row.title,
+      summary: row.summary,
+      position: row.position,
+      createdBy: `${row.createdBy.firstName} ${row.createdBy.lastName}`,
+      createdAt: row.createdAt.toISOString(),
+    },
+  }
+}
+
+export async function deleteModuleLesson(
+  id: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireRole(['ADMIN'])
+
+  const lesson = await db.learningModuleLesson.findUnique({ where: { id } })
+  if (!lesson) return { ok: false, error: 'Not found' }
+
+  await db.$transaction([
+    db.learningMaterial.deleteMany({
+      where: { key: { in: ['pptx', 'pdf', 'video'].map((k) => `${k}:${id}`) } },
+    }),
+    db.learningLessonProgress.deleteMany({ where: { lessonId: id } }),
+    db.learningModuleLesson.delete({ where: { id } }),
+  ])
   return { ok: true }
 }
 

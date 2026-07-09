@@ -25,11 +25,19 @@ separate app, no second login.
 
 **LMS** (Learning tab)
 
-- Fixed 3-lesson / 3-test onboarding journey (slides → PDF → video per lesson)
+- **Onboarding tab** — 3-lesson / 3-test journey (slides → PDF → video per lesson).
+  Lessons unlock on week 4 / 6 / 8 after the employee's start date, each also gated
+  on the previous lesson + test being complete
+- **Module lessons tab** — admin-created lessons (any mix of slides / PDF / video),
+  unlocked once the learner earns the onboarding certificate
 - 30-min test timer, 40 questions sampled from a 60-question bank, 30/40 pass mark,
   lockout after 3 failed attempts (HR notified), compulsory feedback survey gating the
   certificate, screenshot deterrents
-- Admin **Learning Progress** page with every employee's lesson/test status
+- Admin **Learning Progress** page (`/admin/learning`) with every employee's
+  lesson/test status, plus content authoring: replace any onboarding lesson's
+  slides / reading / video / quiz bank, and create module lessons. Uploads are
+  stored in Postgres and apply to the whole team; the same file controls exist
+  inside the Learning Hub's own admin console
 
 **Stack:** Next.js (App Router) · React · Prisma + PostgreSQL · Tailwind/shadcn ·
 JWT session cookie (jose) · Google Drive/Docs (letters & documents) · Resend (email) ·
@@ -246,6 +254,8 @@ Without these the app still runs; the related step is stubbed or falls back.
 - `.env` is git-ignored; only `.env.example` is committed.
 - The portable database in `..\.localdb` is local-only — deploying needs a cloud
   Postgres and the same env vars.
-- LMS content authoring (Create Lesson / upload) is intentionally a scaffold for a
-  future phase; in-app admin file overrides currently persist to the browser only.
+- LMS uploads (lesson overrides + module lesson content) are served from
+  `/api/learning/materials/<key>`. The file route is unauthenticated by design —
+  Microsoft's Office Online viewer must fetch `.pptx` decks itself — matching the
+  exposure of the bundled defaults in `public/materials/`.
 - Full change history and design decisions: `Changes made.md`.

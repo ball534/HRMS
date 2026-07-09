@@ -354,6 +354,8 @@ model User {
   learningLessons        LearningLessonProgress[]
   learningTests          LearningTestProgress[]
   learningSurvey         LearningSurvey?
+  learningMaterialUploads LearningMaterial[] @relation("LearningMaterialUploads")
+  moduleLessonsCreated    LearningModuleLesson[] @relation("ModuleLessonCreator")
 
   careerEvents           CareerEvent[]
 }
@@ -878,6 +880,43 @@ model LearningTestProgress {
 
   @@unique([userId, testId])
   @@index([userId])
+}
+
+// Admin-uploaded lesson content (slides / reading / video / quiz bank) that
+// overrides the bundled files in public/materials for the whole team. Keyed
+// "<kind>:<lessonNo>" (e.g. "pdf:1"); pptx/pdf bytes live in `data` and are
+// served by /api/learning/materials/[key]; video URLs and quiz CSV text live
+// in `text`.
+model LearningMaterial {
+  id           String   @id @default(uuid())
+  // "pptx:1" | "pdf:1" | "video:1" | "csv:1" … for lessons 1..3
+  key          String   @unique
+  // "pptx" | "pdf" | "video" | "csv"
+  kind         String
+  fileName     String?
+  mimeType     String?
+  fileSize     Int?
+  data         Bytes?
+  text         String?
+  uploadedById String
+  uploadedBy   User     @relation("LearningMaterialUploads", fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Admin-created "Module lessons" — the second Learning Hub tab, unlocked once
+// the onboarding certificate is earned. Content (slides / reading / video) is
+// stored as LearningMaterial rows keyed "<kind>:<moduleLessonId>"; learner
+// progress reuses LearningLessonProgress with lessonId = the module lesson id.
+model LearningModuleLesson {
+  id          String   @id @default(uuid())
+  title       String
+  summary     String?
+  position    Int      @default(0)
+  createdById String
+  createdBy   User     @relation("ModuleLessonCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // One feedback survey per learner, gating the e-certificate.

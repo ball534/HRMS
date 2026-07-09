@@ -10,8 +10,7 @@
     "lint": "eslint",
     "db:seed": "tsx -r dotenv/config prisma/seed.ts",
     "db:seed-test": "tsx -r dotenv/config prisma/seed-test.ts",
-    "db:seed-demo": "tsx -r dotenv/config prisma/seed-demo.ts",
-    "db:migrate-data": "tsx -r dotenv/config prisma/migrate-data.ts"
+    "db:seed-demo": "tsx -r dotenv/config prisma/seed-demo.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -58,7 +57,6 @@
     "playwright": "^1.60.0",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "xlsx": "^0.18.5"
+    "typescript": "^5.9.3"
   }
 }

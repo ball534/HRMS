@@ -1,7 +1,15 @@
 import Link from 'next/link'
 import { requireRole } from '@/lib/dal'
-import { getAllLearningProgress, type LearnerRow } from '@/actions/learning'
-import { LearningAuthoringScaffold } from '@/components/admin/LearningAuthoringScaffold'
+import {
+  getAllLearningProgress,
+  listLearningMaterials,
+  listModuleLessons,
+  type LearnerRow,
+} from '@/actions/learning'
+import {
+  LearningContentManager,
+  ModuleLessonManager,
+} from '@/components/admin/LearningContentManager'
 import {
   Table,
   TableBody,
@@ -51,7 +59,11 @@ function TestCell({ cell }: { cell: LearnerRow['tests'][string] }) {
 
 export default async function AdminLearningPage() {
   await requireRole(['ADMIN'])
-  const rows = await getAllLearningProgress()
+  const [rows, materials, moduleLessons] = await Promise.all([
+    getAllLearningProgress(),
+    listLearningMaterials(),
+    listModuleLessons(),
+  ])
 
   const started = rows.filter((r) => r.overallPct > 0)
   const certified = rows.filter((r) => r.certified).length
@@ -184,7 +196,12 @@ export default async function AdminLearningPage() {
         </CardContent>
       </Card>
 
-      <LearningAuthoringScaffold />
+      <LearningContentManager initial={materials} />
+
+      <ModuleLessonManager
+        initialLessons={moduleLessons}
+        initialMaterials={materials}
+      />
     </div>
   )
 }

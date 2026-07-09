@@ -325,6 +325,21 @@ const UI = {
   adminSurveyResponses: t3("Survey responses", "问卷反馈", "Maklum balas tinjauan"),
   adminNoSurvey: t3("No survey submitted yet.", "尚无问卷提交。", "Belum ada tinjauan dihantar."),
   adminApplied: t3("Saved — reloading materials…", "已保存 — 正在重新加载…", "Disimpan — memuat semula bahan…"),
+  adminUploadFailed: t3("Save failed — please try again", "保存失败 — 请重试", "Gagal menyimpan — sila cuba lagi"),
+  // dashboard tabs
+  tabOnboarding: t3("Onboarding", "入职培训", "Onboarding"),
+  tabModules: t3("Module lessons", "模块课程", "Pelajaran modul"),
+  module: t3("Module", "模块", "Modul"),
+  modulesLockedHint: t3(
+    "Complete onboarding and earn your certificate to unlock module lessons.",
+    "完成入职培训并获得证书后即可解锁模块课程。",
+    "Lengkapkan onboarding dan dapatkan sijil anda untuk membuka pelajaran modul.",
+  ),
+  modulesEmpty: t3(
+    "No module lessons have been published yet — check back soon.",
+    "尚未发布模块课程 — 请稍后再来。",
+    "Belum ada pelajaran modul diterbitkan — sila semak semula nanti.",
+  ),
   adminViewLabel: t3("View", "视图", "Paparan"),
   adminAsUser: t3("Learner", "学员", "Pelajar"),
   adminAsAdmin: t3("Admin", "管理员", "Admin"),
@@ -697,29 +712,59 @@ const MAT = {
   sampleQuestions,
 };
 
-// ---- admin file overrides (front-end only) ---------------------------------
-// Uploaded replacement files are kept in localStorage as a map keyed by
-// "<type>:<lessonNo>" — e.g. "csv:1", "pdf:2", "pptx:3", "video:1". CSV values
-// are raw text; pdf/pptx are data: URLs; video is a YouTube URL/id. hydrateMaterials()
-// reads these and prefers them over the bundled files.
-const OV_KEY = "iora-overrides-v1";
+// ---- admin file overrides (server-backed) -----------------------------------
+// Uploaded replacement files live in the HRMS database (LearningMaterial rows)
+// so every learner sees them, keyed "<type>:<lessonNo>" — e.g. "csv:1",
+// "pdf:2", "pptx:3", "video:1". CSV values are raw text; pdf/pptx are serving
+// URLs; video is a YouTube URL/id. hydrateMaterials() refreshes this cache and
+// prefers overrides over the bundled files. Writes go through
+// /api/learning/materials (admin only).
 const IORA_OVERRIDES = {
+  cache: {},
+  modules: [],
   getAll() {
+    return this.cache;
+  },
+  async refresh() {
     try {
-      return JSON.parse(localStorage.getItem(OV_KEY) || "{}") || {};
+      const res = await fetch("/api/learning/materials");
+      if (!res.ok) throw new Error(`${res.status}`);
+      const body = await res.json();
+      this.modules = body.modules || [];
+      const overrides = body.overrides || {};
+      // pptx/pdf overrides arrive as root-relative serving paths; the Office
+      // Online / Google Doc viewers need absolute URLs.
+      for (const [key, value] of Object.entries(overrides)) {
+        if (/^(pptx|pdf):/.test(key) && value.startsWith("/")) {
+          overrides[key] = new URL(value, window.location.origin).href;
+        }
+      }
+      this.cache = overrides;
     } catch (e) {
-      return {};
+      console.warn("[materials] could not load overrides:", e.message);
+      this.cache = {};
+      this.modules = [];
+    }
+    return this.cache;
+  },
+  async upload(key, kind, fileOrValue) {
+    const fd = new FormData();
+    fd.append("key", key);
+    fd.append("kind", kind);
+    if (kind === "video") fd.append("value", fileOrValue);
+    else fd.append("file", fileOrValue);
+    const res = await fetch("/api/learning/materials", { method: "POST", body: fd });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `upload failed (${res.status})`);
     }
   },
-  set(key, value) {
-    const all = this.getAll();
-    all[key] = value;
-    localStorage.setItem(OV_KEY, JSON.stringify(all));
-  },
-  remove(key) {
-    const all = this.getAll();
-    delete all[key];
-    localStorage.setItem(OV_KEY, JSON.stringify(all));
+  async remove(key) {
+    const res = await fetch(
+      `/api/learning/materials?key=${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) throw new Error(`revert failed (${res.status})`);
   },
 };
 
@@ -742,7 +787,6 @@ const TEST_TOTAL = 40;             // questions presented per attempt
 const TEST_BANK_SIZE = 60;         // questions authored per bank
 const TEST_DURATION_SEC = 30 * 60; // 30-minute timer
 const MAX_TEST_ATTEMPTS = 3;       // locked out after the 3rd failed attempt
-const UNLOCK_DELAY_DAYS = 14;      // 2 weeks before the next lesson opens
 
 // ---- lesson metadata -------------------------------------------------------
 // `mat` is the file stem used under materials/<lang>/ (e.g. 1.pptx, 1.pdf, 1.csv,
@@ -753,8 +797,6 @@ const LESSONS = [
     index: 1,
     mat: 1,
     week: 4,
-    unlock: "11/06/2026",
-    due: "02/07/2026",
     title: L("New Employee Training", "新员工培训", "Latihan Pekerja Baharu"),
     summary: L(
       "Brand, service standards and your first week on the floor.",
@@ -777,8 +819,6 @@ const LESSONS = [
     index: 2,
     mat: 2,
     week: 6,
-    unlock: "25/06/2026",
-    due: "16/07/2026",
     title: L(
       "Fitting & Storeroom Training",
       "试衣间与仓库培训",
@@ -805,8 +845,6 @@ const LESSONS = [
     index: 3,
     mat: 3,
     week: 8,
-    unlock: "09/07/2026",
-    due: "30/07/2026",
     title: L(
       "Cashier's Responsibility Training",
       "收银员职责培训",
@@ -852,11 +890,13 @@ const TEST_DEFS = LESSONS.map((les) => ({
 // Exposed immediately with empty content; hydrateMaterials() fills them in.
 const COURSES = LESSONS.map((m) => ({ ...m, parts: [] }));
 const TESTS = TEST_DEFS.map((m) => ({ ...m, bank: [] }));
+// Admin-created module lessons (second dashboard tab); rebuilt on hydration.
+const MODULES = [];
 
 // ---- runtime hydration from /materials -------------------------------------
 const hydrateMaterials = async function hydrateMaterials() {
   const M = MAT;
-  const ov = IORA_OVERRIDES ? IORA_OVERRIDES.getAll() : {};
+  const ov = await IORA_OVERRIDES.refresh();
 
   // videos.csv lives once per language folder; load all up front.
   const videos = await M.fetchCSVAllLangs("videos.csv");
@@ -895,6 +935,36 @@ const hydrateMaterials = async function hydrateMaterials() {
       test.bank = M.buildMCQ(csvByLang, 900 + test.mat);
     }),
   );
+
+  // module lessons: admin-created, language-agnostic, only the uploaded parts
+  const abs = (u) => new URL(u, window.location.origin).href;
+  MODULES.length = 0;
+  IORA_OVERRIDES.modules.forEach((m, i) => {
+    const same = (v) => ({ en: v, zh: v, ms: v });
+    const parts = [];
+    if (m.parts.slides)
+      parts.push({ type: "slides", deck: M.sameUrlAllLangs(abs(m.parts.slides)) });
+    if (m.parts.pdf)
+      parts.push({
+        type: "pdf",
+        name: same(m.parts.pdf.name),
+        url: M.sameUrlAllLangs(abs(m.parts.pdf.url)),
+      });
+    if (m.parts.video)
+      parts.push({
+        type: "video",
+        youtubeId: M.sameIdAllLangs(M.youtubeId(m.parts.video)),
+        title: same(m.title),
+      });
+    MODULES.push({
+      id: m.id,
+      index: i + 1,
+      isModule: true,
+      title: same(m.title),
+      summary: same(m.summary || ""),
+      parts,
+    });
+  });
 };
 
 // ===== quiz.jsx =====
@@ -1093,6 +1163,12 @@ const PART_META = [
   { key: "video", icon: "play", label: "video" },
 ];
 
+// Onboarding lessons always carry all three parts; module lessons only the
+// ones an admin uploaded — so player metadata derives from lesson.parts.
+// (part.type doubles as the progress key.)
+const partMetaFor = (lesson) =>
+  lesson.parts.map((p) => PART_META.find((m) => m.key === p.type));
+
 // ---------- PDF ----------
 function PdfView({ part, done, onComplete }) {
   const tr = useTr();
@@ -1214,10 +1290,16 @@ function VideoView({ part, done, onComplete }) {
 // ---------- part router ----------
 function PartContent({ lesson, partIdx, prog, dispatch }) {
   const part = lesson.parts[partIdx];
-  const key = PART_META[partIdx].key;
+  const key = part.type;
   const done = !!prog.parts[key];
   const complete = () =>
-    dispatch({ type: "completePart", lessonId: lesson.id, part: key });
+    dispatch({
+      type: "completePart",
+      lessonId: lesson.id,
+      part: key,
+      partKeys: lesson.parts.map((p) => p.type),
+      isModule: !!lesson.isModule,
+    });
 
   if (part.type === "slides")
     return <SlideDeck deck={part.deck} done={done} onComplete={complete} />;
@@ -1227,9 +1309,9 @@ function PartContent({ lesson, partIdx, prog, dispatch }) {
 }
 
 // ---------- part nav helpers ----------
-function partUnlocked(prog, idx) {
+function partUnlocked(prog, metaDefs, idx) {
   if (idx === 0) return true;
-  for (let k = 0; k < idx; k++) if (!prog.parts[PART_META[k].key]) return false;
+  for (let k = 0; k < idx; k++) if (!prog.parts[metaDefs[k].key]) return false;
   return true;
 }
 
@@ -1237,18 +1319,19 @@ function partUnlocked(prog, idx) {
 function LessonPlayer({ lesson, prog, dispatch, onExit, onLessonDone }) {
   const tr = useTr();
   const u = useU();
+  const metaDefs = partMetaFor(lesson);
   const firstIncomplete = () => {
-    for (let k = 0; k < PART_META.length; k++)
-      if (!prog.parts[PART_META[k].key] && partUnlocked(prog, k)) return k;
-    return PART_META.length - 1;
+    for (let k = 0; k < metaDefs.length; k++)
+      if (!prog.parts[metaDefs[k].key] && partUnlocked(prog, metaDefs, k)) return k;
+    return metaDefs.length - 1;
   };
   const [active, setActive] = React.useState(firstIncomplete());
 
-  const meta = PART_META.map((m, i) => ({
+  const meta = metaDefs.map((m, i) => ({
     ...m,
     i,
     done: !!prog.parts[m.key],
-    unlocked: partUnlocked(prog, i),
+    unlocked: partUnlocked(prog, metaDefs, i),
   }));
   const goTo = (i) => {
     if (meta[i].unlocked) setActive(i);
@@ -1257,17 +1340,17 @@ function LessonPlayer({ lesson, prog, dispatch, onExit, onLessonDone }) {
   // auto-advance when a part newly completes; fire onLessonDone after the last one
   const prevDone = React.useRef(prog.parts);
   React.useEffect(() => {
-    const justDone = PART_META.find(
+    const justDone = metaDefs.find(
       (m, i) => prog.parts[m.key] && !prevDone.current[m.key] && i === active,
     );
     prevDone.current = prog.parts;
     if (justDone) {
-      if (active < PART_META.length - 1) {
+      if (active < metaDefs.length - 1) {
         const t = setTimeout(() => setActive(active + 1), 550);
         return () => clearTimeout(t);
       }
       // last part complete → lesson done
-      const allDone = PART_META.every((m) => prog.parts[m.key]);
+      const allDone = metaDefs.every((m) => prog.parts[m.key]);
       if (allDone && onLessonDone) {
         const t = setTimeout(onLessonDone, 650);
         return () => clearTimeout(t);
@@ -1291,9 +1374,17 @@ function LessonPlayer({ lesson, prog, dispatch, onExit, onLessonDone }) {
       </button>
       <div className="player-titles">
         <span className="player-kicker">
-          {u("lesson")} {lesson.index} · {u("week")}{" "}
-          {tr({ en: lesson.week, zh: lesson.week, ms: lesson.week })}
-          {u("weekSuffix")}
+          {lesson.isModule ? (
+            <>
+              {u("module")} {lesson.index}
+            </>
+          ) : (
+            <>
+              {u("lesson")} {lesson.index} · {u("week")}{" "}
+              {tr({ en: lesson.week, zh: lesson.week, ms: lesson.week })}
+              {u("weekSuffix")}
+            </>
+          )}
         </span>
         <h1>{tr(lesson.title)}</h1>
       </div>
@@ -1362,7 +1453,12 @@ function JourneyCard({ node, onOpen }) {
   const tr = useTr();
   const { kind, index, item, locked, complete, pct, lockHint, lockedOut } = node;
   const isTest = kind === "test";
-  const title = isTest ? `${u("test")} ${index}` : `${u("lesson")} ${index}`;
+  const title =
+    kind === "module"
+      ? tr(node.title)
+      : isTest
+        ? `${u("test")} ${index}`
+        : `${u("lesson")} ${index}`;
   const barColor = complete ? "var(--green)" : isTest ? "var(--blue)" : "var(--green)";
   return (
     <button
@@ -1370,7 +1466,8 @@ function JourneyCard({ node, onOpen }) {
         "lcard" +
         (locked ? " is-locked" : "") +
         (complete ? " is-done" : "") +
-        (isTest ? " is-test" : "")
+        (isTest ? " is-test" : "") +
+        (kind === "module" ? " is-module" : "")
       }
       onClick={() => !locked && onOpen(item)}
       disabled={locked}
@@ -1378,7 +1475,7 @@ function JourneyCard({ node, onOpen }) {
     >
       <div className="lcard-thumb">
         <Thumb
-          label={`${isTest ? "test" : "lesson"} ${index}`}
+          label={`${kind === "module" ? "module" : isTest ? "test" : "lesson"} ${index}`}
           locked={locked}
         />
         {locked && !complete && (
@@ -1404,18 +1501,53 @@ function JourneyCard({ node, onOpen }) {
   );
 }
 
-function Dashboard({ journey, onOpen }) {
+function Dashboard({ journey, moduleTiles, modulesUnlocked, onOpen }) {
   const u = useU();
+  const [tab, setTab] = React.useState("onboarding");
+  const showModules = tab === "modules";
   return (
     <div className="dash">
       <div className="dash-head">
         <h1>{u("myCourses")}</h1>
       </div>
-      <div className="card-grid">
-        {journey.map((node) => (
-          <JourneyCard key={node.key} node={node} onOpen={onOpen} />
-        ))}
+      <div className="dash-tabs">
+        <button
+          className={"dash-tab" + (!showModules ? " active" : "")}
+          onClick={() => setTab("onboarding")}
+        >
+          {u("tabOnboarding")}
+        </button>
+        <button
+          className={"dash-tab" + (showModules ? " active" : "")}
+          onClick={() => setTab("modules")}
+        >
+          {!modulesUnlocked && <Icon name="lock" size={14} />}
+          {u("tabModules")}
+        </button>
       </div>
+      {!showModules ? (
+        <div className="card-grid">
+          {journey.map((node) => (
+            <JourneyCard key={node.key} node={node} onOpen={onOpen} />
+          ))}
+        </div>
+      ) : !modulesUnlocked ? (
+        <div className="modules-note">
+          <Icon name="lock" size={18} />
+          <span>{u("modulesLockedHint")}</span>
+        </div>
+      ) : moduleTiles.length === 0 ? (
+        <div className="modules-note">
+          <Icon name="file" size={18} />
+          <span>{u("modulesEmpty")}</span>
+        </div>
+      ) : (
+        <div className="card-grid">
+          {moduleTiles.map((node) => (
+            <JourneyCard key={node.key} node={node} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2400,15 +2532,23 @@ function makeInitial(seed) {
   const lesson = (id) =>
     sp[id] ? { parts: { ...(sp[id].parts || {}) } } : emptyLesson();
   const test = (id) => (st[id] ? { ...emptyTest(), ...st[id] } : emptyTest());
+  // module lesson progress rides along under its module id
+  const moduleProgress = {};
+  for (const id of Object.keys(sp)) {
+    if (!LESSON_IDS.includes(id)) moduleProgress[id] = lesson(id);
+  }
   return {
     lang: seed.lang || "en",
     theme: seed.theme || "light",
     userName: seed.userName || "Learner",
     role: seed.role || "user", // "user" | "admin"
+    // enrollment (employment start) drives the week-4/6/8 lesson unlocks
+    enrolledAt: seed.enrolledAt || Date.now(),
     progress: {
       lesson1: lesson("lesson1"),
       lesson2: lesson("lesson2"),
       lesson3: lesson("lesson3"),
+      ...moduleProgress,
     },
     tests: { test1: test("test1"), test2: test("test2"), test3: test("test3") },
     survey: seed.survey || {
@@ -2459,26 +2599,36 @@ function reducer(s, a) {
       };
     case "completePart": {
       const p = { ...s.progress };
-      const parts = { ...p[a.lessonId].parts, [a.part]: true };
-      p[a.lessonId] = { ...p[a.lessonId], parts };
+      const cur = p[a.lessonId] || emptyLesson();
+      const parts = { ...cur.parts, [a.part]: true };
+      p[a.lessonId] = { ...cur, parts };
       const idx = LESSON_IDS.indexOf(a.lessonId) + 1;
-      const justFinished = PART_KEYS.every((k) => parts[k]);
+      // module lessons only require the parts they actually have
+      const requiredKeys = a.partKeys || PART_KEYS;
+      const justFinished =
+        requiredKeys.length > 0 && requiredKeys.every((k) => parts[k]);
+      const doneText = a.isModule
+        ? notif(
+            "Module lesson completed",
+            "模块课程已完成",
+            "Pelajaran modul selesai",
+          )
+        : notif(
+            `Lesson ${idx} completed`,
+            `课程 ${idx} 已完成`,
+            `Pelajaran ${idx} selesai`,
+          );
       const extra = justFinished
         ? {
-            notifications: [
-              notif(
-                `Lesson ${idx} completed`,
-                `课程 ${idx} 已完成`,
-                `Pelajaran ${idx} selesai`,
-              ),
-              ...s.notifications,
-            ],
+            notifications: [doneText, ...s.notifications],
             hrEvents: [
               ...s.hrEvents,
               {
                 at: Date.now(),
                 type: "lesson_complete",
-                detail: `Lesson ${idx} completed`,
+                detail: a.isModule
+                  ? "Module lesson completed"
+                  : `Lesson ${idx} completed`,
               },
             ],
           }
@@ -2754,58 +2904,41 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
     [onLogout],
   );
 
-  // ---- admin: file overrides ----
+  // ---- admin: file overrides (persisted server-side for the whole team) ----
   const reloadMaterials = useCallback(() => {
-    window
-      .hydrateMaterials()
+    return hydrateMaterials()
       .then(() => setMatVersion((v) => v + 1))
       .catch((e) => console.error("[materials] reload failed:", e));
   }, []);
 
   const onUpload = useCallback(
     (key, fileOrValue, kind) => {
-      const done = () => {
-        reloadMaterials();
-        pushToast(UI.adminApplied, "checkCircle");
-      };
-      if (kind === "video") {
-        IORA_OVERRIDES.set(key, fileOrValue);
-        done();
-      } else if (kind === "csv") {
-        const reader = new FileReader();
-        reader.onload = () => {
-          IORA_OVERRIDES.set(key, String(reader.result));
-          done();
-        };
-        reader.readAsText(fileOrValue);
-      } else {
-        // pdf / pptx → data URL
-        const reader = new FileReader();
-        reader.onload = () => {
-          IORA_OVERRIDES.set(key, String(reader.result));
-          done();
-        };
-        reader.readAsDataURL(fileOrValue);
-      }
+      IORA_OVERRIDES.upload(key, kind, fileOrValue)
+        .then(() => reloadMaterials())
+        .then(() => pushToast(UI.adminApplied, "checkCircle"))
+        .catch((e) => {
+          console.error("[materials] upload failed:", e);
+          pushToast(UI.adminUploadFailed, "x", "alert");
+        });
     },
     [reloadMaterials, pushToast],
   );
 
   const onRevert = useCallback(
     (key) => {
-      IORA_OVERRIDES.remove(key);
-      reloadMaterials();
-      pushToast(UI.adminApplied, "refresh");
+      IORA_OVERRIDES.remove(key)
+        .then(() => reloadMaterials())
+        .then(() => pushToast(UI.adminApplied, "refresh"))
+        .catch((e) => {
+          console.error("[materials] revert failed:", e);
+          pushToast(UI.adminUploadFailed, "x", "alert");
+        });
     },
     [reloadMaterials, pushToast],
   );
 
   // ---- derived: gating + journey ----
   const D = useMemo(() => {
-    const parseDue = (str) => {
-      const [d, m, y] = str.split("/").map(Number);
-      return new Date(y, m - 1, d);
-    };
     const today = state.simDate ? new Date(state.simDate) : new Date();
 
     const lessonComplete = (id) =>
@@ -2816,17 +2949,16 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
       100;
 
     const testOf = (n) => state.tests["test" + n];
-    const lessonUnlockDate = (n) => {
-      // lesson n (>=2) opens 2 weeks after test (n-1) is completed
-      const prev = testOf(n - 1);
-      if (!prev || !prev.passed || !prev.completedAt) return null;
-      return new Date(prev.completedAt + UNLOCK_DELAY_DAYS * DAY_MS);
-    };
-    const lessonUnlocked = (n) => {
-      if (n === 1) return true;
-      const d = lessonUnlockDate(n);
-      return !!d && today >= d;
-    };
+    // Lesson n opens at the start of week `LESSONS[n].week` after enrollment
+    // (week 4 / 6 / 8), and — beyond lesson 1 — only once the previous unit
+    // (lesson + test) is complete.
+    const lessonUnlockDate = (n) =>
+      new Date(state.enrolledAt + (LESSONS[n - 1].week - 1) * 7 * DAY_MS);
+    const prevUnitDone = (n) =>
+      n === 1 ||
+      (lessonComplete("lesson" + (n - 1)) && !!testOf(n - 1)?.passed);
+    const lessonUnlocked = (n) =>
+      today >= lessonUnlockDate(n) && prevUnitDone(n);
     const testUnlocked = (n) => lessonComplete("lesson" + n);
     const testPassed = (n) => testOf(n).passed;
     const testLocked = (n) => testOf(n).locked;
@@ -2847,16 +2979,14 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
       const unlocked = lessonUnlocked(n);
       let lockHint = null;
       if (!unlocked) {
-        const prevPassed = testOf(n - 1) && testOf(n - 1).passed;
-        if (!prevPassed) {
+        if (!prevUnitDone(n)) {
           lockHint = t3(
             `Pass Test ${n - 1} first`,
             `请先通过测验 ${n - 1}`,
             `Lulus Ujian ${n - 1} dahulu`,
           );
         } else {
-          const d = lessonUnlockDate(n);
-          const ds = d ? fmt(d) : "";
+          const ds = fmt(lessonUnlockDate(n));
           lockHint = t3(`Opens ${ds}`, `${ds} 开放`, `Buka ${ds}`);
         }
       }
@@ -2871,6 +3001,8 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
         pct: lessonPct(c.id),
         lockHint,
         lockedOut: false,
+        // three weeks to finish a lesson once its week opens
+        due: fmt(new Date(lessonUnlockDate(n).getTime() + 21 * DAY_MS)),
       });
 
       const test = TESTS[n - 1];
@@ -2906,27 +3038,44 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
     const upcoming = upNode
       ? {
           title: upNode.title,
-          due: upNode.kind === "lesson" ? upNode.item.due : null,
+          due: upNode.kind === "lesson" ? upNode.due : null,
         }
       : null;
 
     // next still-locked lesson that's waiting on a date (powers the sim tweak)
     let nextLockedDate = null;
     let nextLockedLabel = null;
-    for (let n = 2; n <= 3; n++) {
-      if (!lessonUnlocked(n)) {
-        const d = lessonUnlockDate(n);
-        if (d && today < d) {
-          nextLockedDate = d;
-          nextLockedLabel = "Lesson " + n;
-          break;
-        }
+    for (let n = 1; n <= 3; n++) {
+      if (!lessonUnlocked(n) && prevUnitDone(n) && today < lessonUnlockDate(n)) {
+        nextLockedDate = lessonUnlockDate(n);
+        nextLockedLabel = "Lesson " + n;
+        break;
       }
     }
 
+    // module lessons tab — unlocked by the onboarding certificate
+    // (all tests passed + survey submitted)
+    const modulesUnlocked = allTestsPassed && state.survey.done;
+    const moduleTiles = MODULES.map((m) => {
+      const prog = state.progress[m.id] || { parts: {} };
+      const keys = m.parts.map((p) => p.type);
+      const doneCount = keys.filter((k) => prog.parts[k]).length;
+      return {
+        key: m.id,
+        kind: "module",
+        index: m.index,
+        item: m,
+        title: m.title,
+        complete: keys.length > 0 && doneCount === keys.length,
+        locked: !modulesUnlocked || keys.length === 0,
+        pct: keys.length ? (doneCount / keys.length) * 100 : 0,
+        lockHint: null,
+        lockedOut: false,
+      };
+    });
+
     return {
       today,
-      parseDue,
       lessonComplete,
       lessonPct,
       lessonUnlocked,
@@ -2935,6 +3084,8 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
       overall,
       unitsDone,
       allTestsPassed,
+      modulesUnlocked,
+      moduleTiles,
       upcoming,
       nextLockedDate,
       nextLockedLabel,
@@ -2942,7 +3093,9 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
   }, [state, matVersion]);
 
   const openItem = (item) => {
-    if (TEST_IDS.includes(item.id)) setRoute({ screen: "test", testId: item.id });
+    if (item.isModule) setRoute({ screen: "mlesson", lessonId: item.id });
+    else if (TEST_IDS.includes(item.id))
+      setRoute({ screen: "test", testId: item.id });
     else setRoute({ screen: "lesson", lessonId: item.id });
   };
   const goDash = () => setRoute({ screen: "dash" });
@@ -2961,7 +3114,14 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
 
   let screen = null;
   if (route.screen === "dash") {
-    screen = <Dashboard journey={D.journey} onOpen={openItem} />;
+    screen = (
+      <Dashboard
+        journey={D.journey}
+        moduleTiles={D.moduleTiles}
+        modulesUnlocked={D.modulesUnlocked}
+        onOpen={openItem}
+      />
+    );
   } else if (route.screen === "lesson") {
     const lesson = COURSES.find((c) => c.id === route.lessonId);
     screen = (
@@ -2972,6 +3132,25 @@ function App({ seed, profileHref, saveLearning, onLogout }) {
         dispatch={dispatch}
         onExit={goDash}
         onLessonDone={() => setTimeout(goDash, 200)}
+      />
+    );
+  } else if (route.screen === "mlesson") {
+    const lesson = MODULES.find((c) => c.id === route.lessonId);
+    screen = lesson ? (
+      <LessonPlayer
+        key={lesson.id + ":" + matVersion}
+        lesson={lesson}
+        prog={state.progress[lesson.id] || emptyLesson()}
+        dispatch={dispatch}
+        onExit={goDash}
+        onLessonDone={() => setTimeout(goDash, 200)}
+      />
+    ) : (
+      <Dashboard
+        journey={D.journey}
+        moduleTiles={D.moduleTiles}
+        modulesUnlocked={D.modulesUnlocked}
+        onOpen={openItem}
       />
     );
   } else if (route.screen === "test") {
@@ -3102,10 +3281,30 @@ function Boot(props) {
 // ---- Next.js entry: inject the LMS stylesheet (scoped to this mounted tree,
 // so it does not leak into the rest of HRMS) and boot the app with the
 // server-provided session identity + synced progress. ----
+// Styles for features added after the SPA port (dashboard tabs, module notes).
+const LMS_CSS_EXTRA = `
+  .dash-tabs { display: flex; gap: 8px; margin-bottom: 22px; }
+  .dash-tab {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 10px 18px; border-radius: 9px;
+    font-weight: 600; font-size: 14.5px; color: var(--ink-2);
+    background: var(--panel); box-shadow: var(--shadow); transition: 0.15s;
+  }
+  .dash-tab:hover { color: var(--ink); }
+  .dash-tab.active { box-shadow: inset 0 0 0 2px var(--blue), var(--shadow); color: var(--ink); }
+  .modules-note {
+    display: flex; align-items: center; gap: 11px;
+    background: var(--panel); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 20px 22px;
+    color: var(--ink-2); font-size: 15px; max-width: 560px;
+  }
+  .lcard.is-module .lcard-title { white-space: normal; font-size: 16.5px; text-align: left; }
+`;
+
 export default function LearningApp({ seed, profileHref, saveLearning, onLogout }) {
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: LMS_CSS }} />
+      <style dangerouslySetInnerHTML={{ __html: LMS_CSS + LMS_CSS_EXTRA }} />
       <Boot
         seed={seed}
         profileHref={profileHref}
