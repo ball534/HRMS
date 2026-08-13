@@ -54,35 +54,17 @@ export async function resolveFileAccess(
   blobId: string,
   session: VerifiedSession,
 ): Promise<FileAccessDecision> {
-  // A blob is only reachable through the records that point at it.
-  const [documents, receipts, letters, templates] = await Promise.all([
-    db.document.findMany({
-      where: { blobId },
-      select: { id: true, employeeId: true, scope: true, category: true, fileName: true, name: true },
-    }),
-    db.expenseReceipt.findMany({
-      where: { blobId },
-      select: {
-        id: true,
-        fileName: true,
-        expense: { select: { id: true, userId: true, approverId: true } },
-      },
-    }),
-    db.employmentLetter.findMany({
-      where: { blobId },
-      select: { id: true, employeeId: true, type: true, approvingOfficerId: true },
-    }),
-    db.letterTemplate.findMany({
-      where: { blobId },
-      select: { id: true, type: true, fileName: true },
-    }),
-  ])
-
-  const referenced =
-    documents.length > 0 || receipts.length > 0 || letters.length > 0 || templates.length > 0
-  if (!referenced) {
-    return { allowed: false, reason: 'not_found' }
-  }
+  // A blob is only reachable through the records that point at it, so we look
+  // those up and apply each one's own rule.
+  //
+  // Queried in sequence rather than all at once, most-likely first: the great
+  // majority of files are documents, so the common case costs one indexed
+  // lookup instead of four. Every one of these columns is indexed — before
+  // that, each download did four sequential scans.
+  const documents = await db.document.findMany({
+    where: { blobId },
+    select: { id: true, employeeId: true, scope: true, category: true, fileName: true },
+  })
 
   // --- Documents ---
   for (const doc of documents) {
@@ -118,6 +100,14 @@ export async function resolveFileAccess(
   }
 
   // --- Expense receipts ---
+  const receipts = await db.expenseReceipt.findMany({
+    where: { blobId },
+    select: {
+      id: true,
+      fileName: true,
+      expense: { select: { userId: true, approverId: true } },
+    },
+  })
   for (const receipt of receipts) {
     const isClaimant = receipt.expense.userId === session.userId
     const isApprover = receipt.expense.approverId === session.userId
@@ -133,6 +123,10 @@ export async function resolveFileAccess(
   }
 
   // --- Employment / confirmation letters ---
+  const letters = await db.employmentLetter.findMany({
+    where: { blobId },
+    select: { id: true, employeeId: true, type: true, approvingOfficerId: true },
+  })
   for (const letter of letters) {
     const isSubject = letter.employeeId === session.userId
     const isOfficer = letter.approvingOfficerId === session.userId
@@ -148,6 +142,10 @@ export async function resolveFileAccess(
   }
 
   // --- Letter templates ---
+  const templates = await db.letterTemplate.findMany({
+    where: { blobId },
+    select: { id: true, fileName: true },
+  })
   for (const template of templates) {
     if (can(session.role, 'letters.write')) {
       return {
@@ -160,5 +158,9 @@ export async function resolveFileAccess(
     }
   }
 
-  return { allowed: false, reason: 'forbidden' }
+  // Nothing references this blob at all — treat it as gone rather than as
+  // unowned-and-therefore-free.
+  const referenced =
+    documents.length > 0 || receipts.length > 0 || letters.length > 0 || templates.length > 0
+  return { allowed: false, reason: referenced ? 'forbidden' : 'not_found' }
 }

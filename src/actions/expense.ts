@@ -752,18 +752,14 @@ export async function getApprovalExpenses(filters?: ApprovalExpenseFilters) {
   })
 
   // Generate presigned URLs for receipts
-  const expensesWithUrls = await Promise.all(
-    expenses.map(async expense => ({
-      ...expense,
-      amount: expense.amount.toString(),
-      receipts: await Promise.all(
-        expense.receipts.map(async receipt => ({
-          ...receipt,
-          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
-        }))
-      ),
-    }))
-  )
+  const expensesWithUrls = expenses.map(expense => ({
+    ...expense,
+    amount: expense.amount.toString(),
+    receipts: expense.receipts.map(receipt => ({
+      ...receipt,
+      url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
+    })),
+  }))
 
   return expensesWithUrls
 }
@@ -792,18 +788,14 @@ export async function getReimbursableExpenses() {
     orderBy: { updatedAt: 'asc' },
   })
 
-  const expensesWithUrls = await Promise.all(
-    expenses.map(async expense => ({
-      ...expense,
-      amount: expense.amount.toString(),
-      receipts: await Promise.all(
-        expense.receipts.map(async receipt => ({
-          ...receipt,
-          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
-        }))
-      ),
-    }))
-  )
+  const expensesWithUrls = expenses.map(expense => ({
+    ...expense,
+    amount: expense.amount.toString(),
+    receipts: expense.receipts.map(receipt => ({
+      ...receipt,
+      url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
+    })),
+  }))
 
   return expensesWithUrls
 }
@@ -838,18 +830,14 @@ export async function getPendingExpenseApprovals() {
     orderBy: { submittedAt: 'asc' },
   })
 
-  const expensesWithUrls = await Promise.all(
-    expenses.map(async expense => ({
-      ...expense,
-      amount: expense.amount.toString(),
-      receipts: await Promise.all(
-        expense.receipts.map(async receipt => ({
-          ...receipt,
-          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
-        }))
-      ),
-    }))
-  )
+  const expensesWithUrls = expenses.map(expense => ({
+    ...expense,
+    amount: expense.amount.toString(),
+    receipts: expense.receipts.map(receipt => ({
+      ...receipt,
+      url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
+    })),
+  }))
 
   return expensesWithUrls
 }

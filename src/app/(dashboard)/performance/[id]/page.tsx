@@ -348,7 +348,7 @@ export default async function ReviewDetailPage({ params }: Props) {
             Acknowledge
           </h2>
           <p className="mb-4 text-xs text-muted-foreground">
-            Confirm you've seen your manager's evaluation. {cycle.employeeCanComment && 'You can leave a comment first.'}
+            Confirm you&apos;ve seen your manager&apos;s evaluation. {cycle.employeeCanComment && 'You can leave a comment first.'}
           </p>
           <AcknowledgeForm reviewId={review.id} allowComment={cycle.employeeCanComment} />
         </section>

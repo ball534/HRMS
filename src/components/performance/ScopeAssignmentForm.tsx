@@ -36,14 +36,10 @@ export function ScopeAssignmentForm({ cycleId, disabled, disabledReason, candida
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
 
-  if (disabled) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        {disabledReason ?? 'Scope can only be modified on DRAFT or ACTIVE cycles.'}
-      </p>
-    )
-  }
-
+  // Every hook must run on every render. This useMemo used to sit *below* the
+  // `disabled` early return, so the hook count changed whenever `disabled`
+  // flipped — which React reports as "rendered fewer hooks than expected" and
+  // which crashes the component. The early return now comes after it.
   const filteredCandidates = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return candidates
@@ -53,6 +49,14 @@ export function ScopeAssignmentForm({ cycleId, disabled, disabledReason, candida
         .includes(q),
     )
   }, [candidates, query])
+
+  if (disabled) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {disabledReason ?? 'Scope can only be modified on DRAFT or ACTIVE cycles.'}
+      </p>
+    )
+  }
 
   function togglePick(id: string) {
     setPicked(prev => {

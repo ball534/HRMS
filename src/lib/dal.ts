@@ -74,22 +74,6 @@ export const verifySession = cache(async (): Promise<VerifiedSession> => {
 })
 
 /**
- * Role gate. Prefer `requireCapability` for anything new — naming the
- * capability keeps the role mapping in one place (src/lib/permissions.ts)
- * instead of spreading it across every page. This is kept for checks that are
- * genuinely about identity rather than permission.
- */
-export async function requireRole(allowedRoles: string[]): Promise<VerifiedSession> {
-  const session = await verifySession()
-
-  if (!allowedRoles.includes(session.role)) {
-    redirect('/dashboard')
-  }
-
-  return session
-}
-
-/**
  * Capability gate for pages and server actions. Redirects to the dashboard
  * when the caller's role doesn't hold `capability`.
  */
@@ -98,21 +82,6 @@ export async function requireCapability(capability: Capability): Promise<Verifie
 
   if (!can(session.role, capability)) {
     redirect('/dashboard')
-  }
-
-  return session
-}
-
-/**
- * Throwing variant for server actions, where a redirect to the dashboard
- * silently swallows the failure and the caller sees nothing happen. Produces
- * an error the form's error state can show.
- */
-export async function assertCapability(capability: Capability): Promise<VerifiedSession> {
-  const session = await verifySession()
-
-  if (!can(session.role, capability)) {
-    throw new Error('You do not have permission to perform this action')
   }
 
   return session

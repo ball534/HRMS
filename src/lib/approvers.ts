@@ -61,12 +61,6 @@ export async function assertNotSelf(
   )
 }
 
-/** Non-throwing form, for deciding whether to render an approve button. */
-export async function isSelfApproval(actorId: string, subjectId: string): Promise<boolean> {
-  if (actorId !== subjectId) return false
-  return getSetting('approvals.blockSelfApproval')
-}
-
 export type ApproverResolution = {
   approverId: string
   /** Where the approver came from — surfaced in the UI so routing isn't a mystery. */

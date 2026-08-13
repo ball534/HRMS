@@ -22,8 +22,7 @@ export default async function LetterDetailPage({ params }: Props) {
       ? { id: letter.approvingOfficer.id, firstName: letter.approvingOfficer.firstName, lastName: letter.approvingOfficer.lastName }
       : null,
     reviewedByName: letter.reviewedBy ? `${letter.reviewedBy.firstName} ${letter.reviewedBy.lastName}` : null,
-    driveFileId: letter.driveFileId,
-    driveWebViewLink: letter.driveWebViewLink,
+    blobId: letter.blobId,
     dueDate: letter.dueDate?.toISOString() ?? null,
     overdue: letter.overdue,
     rejectionReason: letter.rejectionReason,

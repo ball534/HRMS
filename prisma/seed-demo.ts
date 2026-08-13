@@ -24,6 +24,7 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import bcrypt from 'bcryptjs'
 import { createHash } from 'node:crypto'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { buildPlaceholderTemplate } from '../src/lib/letterTemplate'
 import {
   addDays,
   addMonths,
@@ -126,68 +127,6 @@ async function storeBlob(data: Buffer, mimeType = 'application/pdf', refs = 1): 
     select: { id: true },
   })
   return created.id
-}
-
-/** Placeholder letter template, matching scripts/make-placeholder-templates.ts. */
-async function makeLetterTemplate(type: 'EMPLOYMENT' | 'CONFIRMATION'): Promise<Buffer> {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([595.28, 841.89])
-  const font = await pdf.embedFont(StandardFonts.Helvetica)
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
-  const form = pdf.getForm()
-  const left = 72
-  const right = 595.28 - 72
-  let y = 780
-
-  page.drawText(type === 'EMPLOYMENT' ? 'LETTER OF EMPLOYMENT' : 'LETTER OF CONFIRMATION', {
-    x: left,
-    y,
-    size: 16,
-    font: bold,
-  })
-  y -= 12
-  page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.75 })
-  y -= 24
-  page.drawText('PLACEHOLDER TEMPLATE — replace with approved company stationery', {
-    x: left,
-    y,
-    size: 8,
-    font,
-    color: rgb(0.45, 0.45, 0.5),
-  })
-  y -= 28
-
-  function field(name: string, label: string, width = right - left) {
-    page.drawText(label, { x: left, y, size: 8, font, color: rgb(0.45, 0.45, 0.5) })
-    y -= 15
-    const box = form.createTextField(name)
-    box.setText('')
-    box.addToPage(page, {
-      x: left,
-      y: y - 3,
-      width,
-      height: 18,
-      borderWidth: 0.5,
-      borderColor: rgb(0.8, 0.8, 0.84),
-      font,
-    })
-    y -= 26
-  }
-
-  field('company', 'Company')
-  field('today', 'Date')
-  field('fullName', 'Employee name')
-  field('employeeNumber', 'Employee ID', 220)
-  field('email', 'Email')
-  field('position', 'Position')
-  field('department', 'Department')
-  field('country', 'Country', 220)
-  field('startDate', 'Start date', 220)
-  field(type === 'EMPLOYMENT' ? 'probationEndDate' : 'confirmationDate', 'Key date', 220)
-  y -= 56 // room for the stamped signature
-  field('approvingOfficerName', 'Name of signing officer', 260)
-
-  return Buffer.from(await pdf.save())
 }
 
 // ============================================================
@@ -347,7 +286,7 @@ async function main() {
 
   // Letter templates — placeholders, so the letters flow works immediately.
   for (const type of ['EMPLOYMENT', 'CONFIRMATION'] as const) {
-    const bytes = await makeLetterTemplate(type)
+    const bytes = await buildPlaceholderTemplate(type)
     const blobId = await storeBlob(bytes)
     const fieldNames = (await PDFDocument.load(bytes))
       .getForm()

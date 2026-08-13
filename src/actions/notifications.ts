@@ -42,13 +42,6 @@ export async function getMyNotifications(limit = INBOX_PAGE_SIZE): Promise<Notif
   }))
 }
 
-export async function getUnreadNotificationCount(): Promise<number> {
-  const session = await verifySession()
-  return db.notification.count({
-    where: { userId: session.userId, readAt: null },
-  })
-}
-
 export async function markNotificationRead(id: string): Promise<{ success: boolean }> {
   const session = await verifySession()
 

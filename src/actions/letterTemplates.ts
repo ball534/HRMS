@@ -5,11 +5,8 @@ import { db } from '@/lib/db'
 import { requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
 import { storage, putChecked, FileTooLargeError } from '@/lib/storage'
-import {
-  LETTER_MERGE_FIELDS,
-  buildPlaceholderTemplate,
-  extractFieldNames,
-} from '@/lib/letterPdf'
+import { extractFieldNames } from '@/lib/letterPdf'
+import { LETTER_MERGE_FIELDS, buildPlaceholderTemplate } from '@/lib/letterTemplate'
 import type { LetterType } from '@/generated/prisma/client'
 
 /**

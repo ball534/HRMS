@@ -17,8 +17,7 @@ type Letter = {
   employeeName: string
   approvingOfficer: { id: string; firstName: string; lastName: string } | null
   reviewedByName: string | null
-  driveFileId: string | null
-  driveWebViewLink: string | null
+  blobId: string | null
   dueDate: string | null
   overdue: boolean
   rejectionReason: string | null
@@ -90,9 +89,9 @@ export function LetterWorkspace({ letter, officers, currentUserId, currentRole }
         <div className="border-b border-border bg-muted/40 px-4 py-2 text-sm font-medium">
           {letter.type === 'EMPLOYMENT' ? 'Employment letter' : 'Confirmation letter'} — {letter.employeeName}
         </div>
-        {letter.driveFileId ? (
+        {letter.blobId ? (
           <iframe
-            src={`/api/files/${letter.driveFileId}`}
+            src={`/api/files/${letter.blobId}`}
             className="h-[640px] w-full"
             title="Letter preview"
           />
@@ -196,14 +195,14 @@ export function LetterWorkspace({ letter, officers, currentUserId, currentRole }
           </div>
         )}
 
-        {(letter.status === 'SIGNED' || letter.status === 'SENT') && letter.driveWebViewLink && (
+        {(letter.status === 'SIGNED' || letter.status === 'SENT') && letter.blobId && (
           <a
-            href={letter.driveWebViewLink}
+            href={`/api/files/${letter.blobId}`}
             target="_blank"
             rel="noopener noreferrer"
             className="block rounded-xl bg-card p-4 text-sm text-primary ring-1 ring-foreground/10 hover:underline"
           >
-            Open signed PDF in Drive →
+            Open the signed PDF →
           </a>
         )}
       </div>

@@ -16,110 +16,15 @@
 import { PrismaClient } from '../src/generated/prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { createHash } from 'node:crypto'
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { PDFDocument } from 'pdf-lib'
+import { buildPlaceholderTemplate } from '../src/lib/letterTemplate'
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
 const prisma = new PrismaClient({ adapter })
 
 type LetterType = 'EMPLOYMENT' | 'CONFIRMATION'
 
-/**
- * Kept in step with `buildPlaceholderTemplate` in src/lib/letterPdf.ts.
- *
- * Duplicated rather than imported because this script runs outside Next and
- * `src/lib/letterPdf.ts` is marked `server-only`, which throws when imported
- * from a plain Node process.
- */
-async function buildPlaceholderTemplate(type: LetterType): Promise<Buffer> {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([595.28, 841.89]) // A4
-  const font = await pdf.embedFont(StandardFonts.Helvetica)
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
-  const form = pdf.getForm()
-
-  const left = 72
-  const right = 595.28 - 72
-  let y = 780
-
-  const grey = rgb(0.42, 0.42, 0.45)
-  const black = rgb(0.1, 0.1, 0.12)
-
-  function text(value: string, opts: { size?: number; bold?: boolean; color?: typeof black } = {}) {
-    page.drawText(value, {
-      x: left,
-      y,
-      size: opts.size ?? 11,
-      font: opts.bold ? bold : font,
-      color: opts.color ?? black,
-    })
-  }
-
-  function field(name: string, label: string, opts: { width?: number } = {}) {
-    page.drawText(label, { x: left, y, size: 8, font, color: grey })
-    y -= 15
-    const box = form.createTextField(name)
-    box.setText('')
-    box.addToPage(page, {
-      x: left,
-      y: y - 3,
-      width: opts.width ?? right - left,
-      height: 18,
-      borderWidth: 0.5,
-      borderColor: rgb(0.8, 0.8, 0.84),
-      backgroundColor: rgb(0.98, 0.98, 0.99),
-      font,
-    })
-    y -= 26
-  }
-
-  const title = type === 'EMPLOYMENT' ? 'LETTER OF EMPLOYMENT' : 'LETTER OF CONFIRMATION'
-  text(title, { size: 16, bold: true })
-  y -= 12
-  page.drawLine({
-    start: { x: left, y },
-    end: { x: right, y },
-    thickness: 0.75,
-    color: rgb(0.8, 0.8, 0.84),
-  })
-  y -= 24
-  text('PLACEHOLDER TEMPLATE — replace with approved company stationery', {
-    size: 8,
-    color: grey,
-  })
-  y -= 28
-
-  field('company', 'Company')
-  field('today', 'Date')
-  y -= 6
-  field('fullName', 'Employee name')
-  field('employeeNumber', 'Employee ID', { width: 220 })
-  field('email', 'Email')
-  field('position', 'Position')
-  field('department', 'Department')
-  field('country', 'Country', { width: 220 })
-  field('startDate', 'Start date', { width: 220 })
-
-  if (type === 'EMPLOYMENT') {
-    field('probationEndDate', 'Probation end date', { width: 220 })
-  } else {
-    field('confirmationDate', 'Confirmation date', { width: 220 })
-  }
-
-  y -= 10
-  text(
-    type === 'EMPLOYMENT'
-      ? 'We are pleased to confirm your employment on the terms recorded above.'
-      : 'We are pleased to confirm that you have successfully completed your probation period.',
-    { size: 10 },
-  )
-  y -= 40
-  text('Signed for and on behalf of the company', { size: 8, color: grey })
-  y -= 46 // room for the stamped signature image
-  field('approvingOfficerName', 'Name of signing officer', { width: 260 })
-
-  return Buffer.from(await pdf.save())
-}
-
+/** Minimal inline copy of the storage layer's put(), which is server-only. */
 async function storeBlob(data: Buffer): Promise<string> {
   const sha256 = createHash('sha256').update(data).digest('hex')
 
@@ -173,11 +78,9 @@ async function main() {
     })
 
     if (existing && existing.blobId !== blobId) {
-      await prisma.fileBlob
-        .delete({ where: { id: existing.blobId } })
-        .catch(() => {
-          /* still referenced — leave it */
-        })
+      await prisma.fileBlob.delete({ where: { id: existing.blobId } }).catch(() => {
+        /* still referenced — leave it */
+      })
     }
 
     console.log(

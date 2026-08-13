@@ -221,16 +221,3 @@ export async function resolveRules(country: Country, asOf: Date = new Date()): P
   }
 }
 
-/** Every rule set, newest first — for the admin screen. */
-export async function listRuleSets() {
-  return db.statutoryRuleSet.findMany({ orderBy: [{ country: 'asc' }, { effectiveFrom: 'desc' }] })
-}
-
-/**
- * True when any country's rules in force today are unverified — used to decide
- * whether to show the banner on payroll and leave screens.
- */
-export async function hasUnverifiedRules(): Promise<boolean> {
-  const [sg, my] = await Promise.all([resolveRules('SG'), resolveRules('MY')])
-  return !sg.verified || !my.verified
-}

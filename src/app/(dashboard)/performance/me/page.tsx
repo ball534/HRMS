@@ -35,7 +35,7 @@ export default async function MyReviewsPage() {
       {reviews.length === 0 ? (
         <div className="rounded-xl bg-card p-12 text-center ring-1 ring-foreground/10">
           <p className="text-muted-foreground">
-            You have no reviews yet. They'll appear here once HR scopes a cycle that includes you.
+            You have no reviews yet. They&apos;ll appear here once HR scopes a cycle that includes you.
           </p>
         </div>
       ) : (

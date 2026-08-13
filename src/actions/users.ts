@@ -339,7 +339,7 @@ export async function updateUser(
     where: { id: data.id },
     select: {
       status: true, role: true, email: true, firstName: true, lastName: true,
-      employeeNumber: true, folderArchivedAt: true, probationMonths: true, startDate: true,
+      employeeNumber: true, probationMonths: true, startDate: true,
       position: true, department: true, phone: true, dateOfBirth: true, nationality: true,
       nric: true, passportNumber: true, passportExpiry: true, company: true,
       employmentType: true, country: true, reportingManagerId: true,
@@ -449,7 +449,6 @@ export async function updateUser(
           : data.status !== 'TERMINATED' && before.status === 'TERMINATED'
             ? null
             : undefined,
-      folderArchivedAt: becomingArchived ? new Date() : undefined,
     },
   })
 

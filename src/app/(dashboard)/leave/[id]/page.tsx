@@ -57,7 +57,7 @@ export default async function LeaveDetailPage({ params }: Props) {
   if (!isOwner && !isApprover && !isAdmin) notFound()
 
   // Fetch attachment URL if applicable
-  const attachmentInfo = request.attachmentKey
+  const attachmentInfo = request.attachmentBlobId
     ? await getAttachmentUrl(id)
     : null
 

@@ -49,14 +49,10 @@ export interface StorageDriver {
   put(data: Buffer, mimeType: string): Promise<StoredFile>
   /** Fetch bytes. Null when the blob is gone. */
   get(blobId: string): Promise<FetchedFile | null>
-  /** Metadata without pulling the bytes. */
-  stat(blobId: string): Promise<Omit<FetchedFile, 'data'> | null>
   /** Take an additional reference (a second record pointing at the same blob). */
   addRef(blobId: string): Promise<void>
   /** Give up a reference. Deletes the bytes when none remain. */
   release(blobId: string): Promise<void>
-  /** Delete any blob nothing points at. Returns how many were removed. */
-  pruneOrphans(): Promise<number>
 }
 
 function sha256Of(data: Buffer): string {
@@ -129,15 +125,6 @@ const postgresDriver: StorageDriver = {
     }
   },
 
-  async stat(blobId) {
-    const blob = await db.fileBlob.findUnique({
-      where: { id: blobId },
-      // Deliberately excludes `data` — this is the whole point of stat().
-      select: { mimeType: true, fileSize: true, sha256: true },
-    })
-    return blob ?? null
-  },
-
   async addRef(blobId) {
     await db.fileBlob.update({
       where: { id: blobId },
@@ -167,23 +154,6 @@ const postgresDriver: StorageDriver = {
       data: { refCount: { decrement: 1 } },
     })
   },
-
-  async pruneOrphans() {
-    const orphans = await db.fileBlob.findMany({
-      where: { refCount: { lte: 0 } },
-      select: { id: true },
-    })
-    let removed = 0
-    for (const o of orphans) {
-      try {
-        await db.fileBlob.delete({ where: { id: o.id } })
-        removed++
-      } catch {
-        // Still referenced despite the count — leave it and let the count heal.
-      }
-    }
-    return removed
-  },
 }
 
 export const storage: StorageDriver = postgresDriver
@@ -200,7 +170,7 @@ export class FileTooLargeError extends Error {
 }
 
 /** The configured maximum upload size in bytes (Settings → Files). */
-export async function maxUploadBytes(): Promise<number> {
+async function maxUploadBytes(): Promise<number> {
   const mb = await getSetting('files.maxUploadMb')
   return mb * 1024 * 1024
 }
@@ -213,16 +183,4 @@ export async function putChecked(data: Buffer, mimeType: string): Promise<Stored
   const max = await maxUploadBytes()
   if (data.byteLength > max) throw new FileTooLargeError(max)
   return storage.put(data, mimeType)
-}
-
-/**
- * Swap one record's blob for another, handling the reference counts. Pass a
- * null `nextBlobId` to just drop the current one.
- */
-export async function replaceRef(
-  currentBlobId: string | null,
-  nextBlobId: string | null,
-): Promise<void> {
-  if (currentBlobId === nextBlobId) return
-  if (currentBlobId) await storage.release(currentBlobId)
 }

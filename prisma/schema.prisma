@@ -32,7 +32,7 @@ enum UserStatus {
   ACTIVE
   INACTIVE
   TERMINATED
-  REJECTED // offer rejected / candidate declined — folder gets archived
+  REJECTED // offer rejected / candidate declined
 }
 
 enum Country {
@@ -98,7 +98,6 @@ enum AuditAction {
   LETTER_SENT
   LETTER_REMINDER_SENT
   CONFIRMATION_DATE_SET
-  EMPLOYEE_FOLDER_ARCHIVED
 
   // --- Offboarding (see src/actions/offboarding.ts) ---
   USER_OFFBOARDED
@@ -349,7 +348,6 @@ model User {
   role               Role           @default(EMPLOYEE)
   status             UserStatus     @default(ACTIVE)
   terminatedAt       DateTime?
-  folderArchivedAt   DateTime?      // set when the Drive folder is archived (rejected/terminated)
   mustChangePassword Boolean        @default(true)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
@@ -477,8 +475,6 @@ model LeaveRequest {
   halfDay         HalfDayOption @default(NONE)
   daysCount       Float
   reason          String?
-  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
-  attachmentKey   String?
   attachmentBlobId String?
   attachmentBlob  FileBlob?     @relation(fields: [attachmentBlobId], references: [id])
   attachmentName  String?
@@ -494,6 +490,7 @@ model LeaveRequest {
   @@index([userId, status])
   @@index([approverId, status])
   @@index([startDate, endDate])
+  @@index([attachmentBlobId])
 }
 
 model Expense {
@@ -528,8 +525,6 @@ model ExpenseReceipt {
   id           String   @id @default(uuid())
   expenseId    String
   expense      Expense  @relation(fields: [expenseId], references: [id])
-  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
-  s3Key        String?
   blobId       String?
   blob         FileBlob? @relation(fields: [blobId], references: [id])
   fileName     String
@@ -540,6 +535,7 @@ model ExpenseReceipt {
   uploadedBy   User     @relation("ReceiptUploads", fields: [uploadedById], references: [id])
 
   @@index([expenseId])
+  @@index([blobId])
 }
 
 model ExpenseApproval {
@@ -565,9 +561,6 @@ model Document {
   category     DocumentCategory  @default(OTHER)
   employeeId   String?
   employee     User?             @relation("EmployeeDocuments", fields: [employeeId], references: [id])
-  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
-  s3Key        String?
-  /** The stored file. Null only on legacy rows that predate Postgres storage. */
   blobId       String?
   blob         FileBlob?         @relation(fields: [blobId], references: [id])
   fileName     String
@@ -580,6 +573,8 @@ model Document {
 
   @@index([scope, employeeId])
   @@index([scope, employeeId, category])
+  // Every file download resolves what a blob belongs to by querying this.
+  @@index([blobId])
 }
 
 // ============================================================
@@ -844,12 +839,9 @@ model EmploymentLetter {
   rejectedAt         DateTime?
   rejectionReason    String?
 
-  // The generated PDF. `blobId` is the live pointer; the drive* columns are
-  // legacy and are no longer written.
+  // The generated PDF.
   blobId             String?
   blob               FileBlob?    @relation(fields: [blobId], references: [id])
-  driveFileId        String?
-  driveWebViewLink   String?
 
   // Delivery + scheduling (mainly confirmation letters)
   dueDate            DateTime?    // date the letter is due to go out (= confirmationDate)
@@ -863,6 +855,7 @@ model EmploymentLetter {
   @@index([status, type])
   @@index([employeeId])
   @@index([approvingOfficerId, status])
+  @@index([blobId])
 }
 
 // ============================================================
@@ -1117,8 +1110,7 @@ model OrgSetting {
 // ============================================================
 // File storage
 //
-// Files used to live in Google Drive, with the Drive file id stored in
-// `s3Key` / `driveFileId` columns. Storage is now Postgres: the bytes live
+// Files used to live in Google Drive. Storage is now Postgres: the bytes live
 // here and every record that owns a file references a blob by id.
 //
 // Why a separate table rather than a `Bytes` column on Document,
@@ -1192,6 +1184,8 @@ model LetterTemplate {
   uploadedBy   User?      @relation("LetterTemplateUploads", fields: [uploadedById], references: [id])
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+
+  @@index([blobId])
 }
 
 model StatutoryRuleSet {

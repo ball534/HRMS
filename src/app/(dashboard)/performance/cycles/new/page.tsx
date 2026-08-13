@@ -19,7 +19,7 @@ export default async function NewCyclePage() {
         <div>
           <h1 className="text-2xl font-bold">New review cycle</h1>
           <p className="text-muted-foreground">
-            Set up a periodic performance review. After creating, you'll scope it to specific employees.
+            Set up a periodic performance review. After creating, you&apos;ll scope it to specific employees.
           </p>
         </div>
       </div>

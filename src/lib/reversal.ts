@@ -188,20 +188,6 @@ const SPECS: Record<ReversibleEntityType, EntitySpec> = {
   },
 }
 
-/**
- * The reversals available for a record in a given state — so a UI can offer
- * exactly the right buttons instead of guessing.
- */
-export function availableReversals(
-  entityType: ReversibleEntityType,
-  currentState: string,
-  actorRole: string,
-): TransitionRule[] {
-  const spec = SPECS[entityType]
-  if (!can(actorRole, spec.capability)) return []
-  return spec.transitions.filter(t => t.from === currentState)
-}
-
 // ============================================================
 // Reading and writing state per entity
 // ============================================================

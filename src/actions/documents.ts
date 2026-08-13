@@ -226,8 +226,7 @@ export async function getDocuments(params: GetDocumentsParams = {}): Promise<Doc
 
   // No per-file round trip any more: the download URL is just the blob route,
   // which does its own authorization and audit logging when it is actually hit.
-  return Promise.all(
-    docs.map(async (doc) => {
+  return docs.map((doc) => {
       const downloadUrl = doc.blobId ? `/api/files/${doc.blobId}` : ''
       const canDelete = isHR || doc.uploadedById === session.userId
       return {
@@ -248,12 +247,9 @@ export async function getDocuments(params: GetDocumentsParams = {}): Promise<Doc
         downloadUrl,
         canDelete,
       }
-    })
-  )
+  })
 }
 
-// ============================================================
-// getMyDocuments — employee-facing summary view
 // ============================================================
 
 export async function getMyDocuments(): Promise<{

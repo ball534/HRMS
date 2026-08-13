@@ -83,7 +83,6 @@ export default async function PersonPage({ params }: Props) {
     passportExpiry: userForDisplay.passportExpiry?.toISOString() ?? null,
     probationEndDate: userForDisplay.probationEndDate?.toISOString() ?? null,
     confirmationDate: userForDisplay.confirmationDate?.toISOString() ?? null,
-    folderArchivedAt: userForDisplay.folderArchivedAt?.toISOString() ?? null,
     createdAt: userForDisplay.createdAt.toISOString(),
     updatedAt: userForDisplay.updatedAt.toISOString(),
   }
