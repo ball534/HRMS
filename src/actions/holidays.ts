@@ -2,7 +2,7 @@
 
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
 
 const HolidaySchema = z.object({
@@ -33,7 +33,7 @@ export async function createHoliday(
   _state: HolidayState,
   formData: FormData
 ): Promise<HolidayState> {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('holidays.write')
 
   const raw = {
     country: formData.get('country'),
@@ -93,7 +93,7 @@ export async function updateHoliday(
   _state: HolidayState,
   formData: FormData
 ): Promise<HolidayState> {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('holidays.write')
 
   const raw = {
     id: formData.get('id'),

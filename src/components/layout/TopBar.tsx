@@ -12,6 +12,7 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { User, LogOut } from 'lucide-react'
 import { logout } from '@/actions/auth'
+import { NotificationBell } from '@/components/layout/NotificationBell'
 
 interface TopBarProps {
   user: {
@@ -19,6 +20,8 @@ interface TopBarProps {
     email: string
     initials: string
   }
+  /** Server-rendered so the badge is right on first paint. */
+  unreadCount: number
 }
 
 const pageTitles: Record<string, string> = {
@@ -51,7 +54,7 @@ function getPageTitle(pathname: string): string {
   return 'Dashboard'
 }
 
-export function TopBar({ user }: TopBarProps) {
+export function TopBar({ user, unreadCount }: TopBarProps) {
   const pathname = usePathname()
   const title = getPageTitle(pathname)
 
@@ -61,6 +64,9 @@ export function TopBar({ user }: TopBarProps) {
         <SidebarTrigger className="md:hidden -ml-1" />
         <h1 className="text-lg font-semibold">{title}</h1>
       </div>
+
+      <div className="flex items-center gap-1">
+      <NotificationBell initialUnreadCount={unreadCount} />
 
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -95,6 +101,7 @@ export function TopBar({ user }: TopBarProps) {
           </form>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   )
 }

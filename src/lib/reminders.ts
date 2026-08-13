@@ -4,7 +4,7 @@ import { db } from '@/lib/db'
 import { sendHrReminder } from '@/lib/notifications'
 import { sendEmail } from '@/lib/email'
 import { sendLetterToEmployee } from '@/actions/letters'
-import { getWorkPassesForReminder } from '@/actions/workPass'
+import { findWorkPassesDueForReminder } from '@/lib/workPasses'
 import { createAuditLog } from '@/lib/audit'
 
 // ============================================================
@@ -50,10 +50,11 @@ export type ReminderSummary = {
   delivered: number
   overdue: number
   workPasses: number
+  workPassesExpired: number
 }
 
 export async function runDailyReminders(): Promise<ReminderSummary> {
-  const summary: ReminderSummary = { probation: 0, officerNudges: 0, delivered: 0, overdue: 0, workPasses: 0 }
+  const summary: ReminderSummary = { probation: 0, officerNudges: 0, delivered: 0, overdue: 0, workPasses: 0, workPassesExpired: 0 }
   const hrEmails = await getHrEmails()
   const today = startOfToday()
 
@@ -138,9 +139,14 @@ export async function runDailyReminders(): Promise<ReminderSummary> {
     summary.overdue++
   }
 
-  // 5. Work passes entering their reminder window.
-  const passes = await getWorkPassesForReminder()
-  for (const p of passes) {
+  // 5. Work passes entering their reminder window, and passes already expired.
+  //
+  // `due` now fires every day from the lead-day threshold onwards rather than
+  // on the exact lead day only — a single missed cron run used to mean the
+  // reminder never fired for that pass at all.
+  const { due: passesDue, expired: passesExpired } = await findWorkPassesDueForReminder()
+
+  for (const p of passesDue) {
     if (hrEmails.length) {
       await sendHrReminder({
         to: { email: hrEmails[0] },
@@ -156,6 +162,21 @@ export async function runDailyReminders(): Promise<ReminderSummary> {
       }
     }
     summary.workPasses++
+  }
+
+  // An expired pass means someone may be working without valid authorisation —
+  // a direct MOM/immigration exposure. This escalates to the whole HR group
+  // every day until the pass record is updated, rather than being silently
+  // dropped as it was before.
+  for (const p of passesExpired) {
+    if (hrEmails.length) {
+      await sendEmail({
+        to: hrEmails,
+        subject: `EXPIRED work pass: ${p.user.firstName} ${p.user.lastName}`,
+        html: `<p><strong>${p.user.firstName} ${p.user.lastName}</strong>'s ${p.passType} expired on <strong>${fmt(p.expiryDate)}</strong> and has not been renewed in the system.</p><p>If they are still working, this is an immigration compliance exposure. Verify the pass status and update the record.</p>`,
+      }).catch(() => {})
+    }
+    summary.workPassesExpired++
   }
 
   return summary

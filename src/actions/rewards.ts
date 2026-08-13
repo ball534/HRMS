@@ -3,7 +3,10 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { notify } from '@/lib/notify'
+import { assertNotSelf, SelfApprovalError } from '@/lib/approvers'
 import { createAuditLog } from '@/lib/audit'
 
 // ============================================================
@@ -45,7 +48,7 @@ export async function createRewardCycle(
   formData: FormData,
 ): Promise<RewardActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('rewards.admin')
 
     const raw = Object.fromEntries(formData.entries())
     // Form passes empty strings; coerce a couple of optional fields
@@ -97,7 +100,7 @@ export async function transitionRewardCycle(
   to: 'APPROVED' | 'PAID' | 'CLOSED',
 ): Promise<RewardActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('rewards.admin')
     const cycle = await db.rewardCycle.findUniqueOrThrow({ where: { id: cycleId } })
 
     const valid: Record<typeof to, string[]> = {
@@ -107,6 +110,36 @@ export async function transitionRewardCycle(
     }
     if (!valid[to].includes(cycle.status)) {
       return { error: `Cannot transition reward cycle from ${cycle.status} to ${to}.` }
+    }
+
+    // Paying bonuses out is a separate capability from administering the
+    // cycle — HR can build and approve a round, releasing the money is ADMIN.
+    if (to === 'PAID' && !can(session.role, 'rewards.pay')) {
+      return { error: 'You do not have permission to mark bonuses as paid.' }
+    }
+
+    // Approving the cycle bulk-approves every allocation in it, which is how
+    // one admin could approve their own bonus: propose it, approve the cycle,
+    // done. If the actor is a recipient in this cycle, someone else has to
+    // approve it.
+    if (to === 'APPROVED') {
+      const ownAllocation = await db.rewardAllocation.findFirst({
+        where: { cycleId, employeeId: session.userId, status: { in: ['DRAFT', 'APPROVED'] } },
+        select: { id: true },
+      })
+      if (ownAllocation) {
+        try {
+          await assertNotSelf(session.userId, session.userId, 'bonus allocation')
+        } catch (err) {
+          if (err instanceof SelfApprovalError) {
+            return {
+              error:
+                'You have an allocation in this cycle, so you cannot approve it. Ask another admin to approve.',
+            }
+          }
+          throw err
+        }
+      }
     }
 
     const now = new Date()
@@ -129,6 +162,25 @@ export async function transitionRewardCycle(
         })
       }
     })
+
+    // Employees had no visibility of their own rewards at all — no route, no
+    // notification, no record they could see, and so no basis on which to
+    // query an amount.
+    if (to === 'APPROVED' || to === 'PAID') {
+      const allocations = await db.rewardAllocation.findMany({
+        where: { cycleId, status: to },
+        select: { employeeId: true, amount: true, currency: true, bonusType: true },
+      })
+      for (const a of allocations) {
+        await notify({
+          userId: a.employeeId,
+          type: to === 'PAID' ? 'REWARD_PAID' : 'REWARD_APPROVED',
+          title: to === 'PAID' ? 'A bonus has been paid to you' : 'A bonus has been approved for you',
+          body: `${a.currency} ${Number(a.amount).toFixed(2)} — ${a.bonusType.replace(/_/g, ' ').toLowerCase()} (${cycle.name}).`,
+          linkUrl: '/rewards/me',
+        })
+      }
+    }
 
     const action =
       to === 'APPROVED'
@@ -162,7 +214,7 @@ export async function upsertAllocation(
   formData: FormData,
 ): Promise<RewardActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('rewards.admin')
 
     const raw = Object.fromEntries(formData.entries())
     if (raw.linkedReviewId === '') delete (raw as Record<string, unknown>).linkedReviewId
@@ -177,6 +229,17 @@ export async function upsertAllocation(
     const cycle = await db.rewardCycle.findUniqueOrThrow({ where: { id: data.cycleId } })
     if (cycle.status !== 'DRAFT') {
       return { error: 'Allocations can only be edited on DRAFT reward cycles.' }
+    }
+
+    // You cannot write your own bonus line. Someone else with rewards.admin
+    // proposes it, and a third person approves the cycle.
+    try {
+      await assertNotSelf(session.userId, data.employeeId, 'bonus allocation')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) {
+        return { error: 'You cannot create or edit your own bonus allocation.' }
+      }
+      throw err
     }
 
     if (data.allocationId) {
@@ -237,7 +300,7 @@ export async function upsertAllocation(
 
 export async function cancelAllocation(allocationId: string): Promise<RewardActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('rewards.admin')
     const alloc = await db.rewardAllocation.findUniqueOrThrow({ where: { id: allocationId } })
     if (alloc.status === 'PAID') {
       return { error: 'Cannot cancel a paid allocation.' }
@@ -265,7 +328,7 @@ export async function cancelAllocation(allocationId: string): Promise<RewardActi
 // ============================================================
 
 export async function listRewardCycles() {
-  await requireRole(['ADMIN'])
+  await requireCapability('rewards.admin')
   return db.rewardCycle.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
@@ -277,7 +340,7 @@ export async function listRewardCycles() {
 }
 
 export async function getRewardCycle(id: string) {
-  await requireRole(['ADMIN'])
+  await requireCapability('rewards.admin')
   return db.rewardCycle.findUnique({
     where: { id },
     include: {
@@ -300,7 +363,7 @@ export async function getRewardCycle(id: string) {
  * for the cycle's associated ReviewCycle. Used by the "Add allocation" picker.
  */
 export async function listCandidatesForCycle(cycleId: string) {
-  await requireRole(['ADMIN'])
+  await requireCapability('rewards.admin')
   const cycle = await db.rewardCycle.findUniqueOrThrow({
     where: { id: cycleId },
     select: { reviewCycleId: true },

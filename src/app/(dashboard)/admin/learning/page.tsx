@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import {
   getAllLearningProgress,
   listLearningMaterials,
@@ -19,6 +19,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { ReversalDialog } from '@/components/shared/ReversalDialog'
 import {
   Card,
   CardContent,
@@ -42,14 +43,37 @@ function LessonCell({ cell }: { cell: LearnerRow['lessons'][string] }) {
   return <span className="text-muted-foreground">—</span>
 }
 
-function TestCell({ cell }: { cell: LearnerRow['tests'][string] }) {
+function TestCell({
+  cell,
+  userId,
+  testId,
+}: {
+  cell: LearnerRow['tests'][string]
+  userId: string
+  testId: string
+}) {
   if (cell.passed) {
     return (
       <Badge variant="default">{Math.round(cell.bestScore * 100)}%</Badge>
     )
   }
   if (cell.locked) {
-    return <Badge variant="destructive">Locked</Badge>
+    // The lockout message shown to learners has always told them "contact HR,
+    // who can reset your access" — this button is what finally makes that true.
+    return (
+      <div className="flex flex-col items-start gap-1">
+        <Badge variant="destructive">Locked</Badge>
+        <ReversalDialog
+          entityType="LEARNING"
+          entityId={`${userId}:${testId}`}
+          to="UNLOCKED"
+          actionLabel="Reset"
+          description="Unlocks the test and resets the attempt counter to zero so the learner can sit it again."
+          revalidate={['/admin/learning']}
+          variant="ghost"
+        />
+      </div>
+    )
   }
   if (cell.attempts > 0) {
     return <Badge variant="secondary">{cell.attempts} att.</Badge>
@@ -58,7 +82,7 @@ function TestCell({ cell }: { cell: LearnerRow['tests'][string] }) {
 }
 
 export default async function AdminLearningPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('learning.admin')
   const [rows, materials, moduleLessons] = await Promise.all([
     getAllLearningProgress(),
     listLearningMaterials(),
@@ -165,7 +189,7 @@ export default async function AdminLearningPage() {
                     ))}
                     {TEST_IDS.map((id) => (
                       <TableCell key={id} className="text-center">
-                        <TestCell cell={r.tests[id]} />
+                        <TestCell cell={r.tests[id]} userId={r.userId} testId={id} />
                       </TableCell>
                     ))}
                     <TableCell className="text-center font-medium">

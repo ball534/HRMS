@@ -1,9 +1,9 @@
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { listBlackouts } from '@/actions/blackouts'
 import { BlackoutManager } from '@/components/admin/BlackoutManager'
 
 export default async function BlackoutsPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('blackouts.write')
   const rows = await listBlackouts()
 
   return (

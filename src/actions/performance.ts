@@ -3,7 +3,10 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { notify } from '@/lib/notify'
+import { assertNotSelf, tryResolveApprover, SelfApprovalError } from '@/lib/approvers'
 import { createAuditLog } from '@/lib/audit'
 
 // ============================================================
@@ -94,7 +97,7 @@ export async function createReviewCycle(
   formData: FormData
 ): Promise<ReviewActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('performance.admin')
 
     const raw = Object.fromEntries(formData.entries())
     const parsed = createCycleSchema.safeParse(raw)
@@ -175,18 +178,18 @@ export async function scopeReviews(
   }
 ): Promise<{ created: number; error?: string }> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('performance.admin')
 
     const cycle = await db.reviewCycle.findUniqueOrThrow({ where: { id: cycleId } })
     if (cycle.status !== 'DRAFT' && cycle.status !== 'ACTIVE') {
       return { created: 0, error: `Cannot scope a ${cycle.status.toLowerCase()} cycle.` }
     }
 
-    let users: { id: string; reportingManagerId: string | null }[]
+    let users: { id: string; reportingManagerId: string | null; firstName: string; lastName: string }[]
     if (filters.employeeIds && filters.employeeIds.length > 0) {
       users = await db.user.findMany({
         where: { id: { in: filters.employeeIds }, status: 'ACTIVE' },
-        select: { id: true, reportingManagerId: true },
+        select: { id: true, reportingManagerId: true, firstName: true, lastName: true },
       })
     } else {
       users = await db.user.findMany({
@@ -198,12 +201,22 @@ export async function scopeReviews(
           ...(filters.country && filters.country !== 'ALL' ? { country: filters.country } : {}),
           ...(filters.department ? { department: filters.department } : {}),
         },
-        select: { id: true, reportingManagerId: true },
+        select: { id: true, reportingManagerId: true, firstName: true, lastName: true },
       })
     }
 
-    // Snapshot manager at scope time. Employees with no manager get themselves
-    // as a placeholder so they show up; admin can reassign.
+    // Snapshot the reviewer at scope time.
+    //
+    // This used to be `managerId: u.reportingManagerId ?? u.id` — an employee
+    // with no reporting manager became *their own reviewer*, setting their own
+    // goals and writing their own rating, which then fed the bonus picker. The
+    // code comment claimed "admin can reassign" but no reassignment action
+    // existed anywhere in the product.
+    //
+    // Now the standard chain resolves a real reviewer who is never the
+    // employee. If the organisation genuinely has nobody else (a single-user
+    // database), the review is skipped and reported rather than silently
+    // becoming a self-review.
     const existing = await db.performanceReview.findMany({
       where: { cycleId, employeeId: { in: users.map(u => u.id) } },
       select: { employeeId: true },
@@ -213,25 +226,44 @@ export async function scopeReviews(
 
     if (toCreate.length === 0) return { created: 0 }
 
-    await db.performanceReview.createMany({
-      data: toCreate.map(u => ({
+    const resolved: { cycleId: string; employeeId: string; managerId: string; status: 'NOT_STARTED' }[] = []
+    const unresolvable: string[] = []
+
+    for (const u of toCreate) {
+      const approver = await tryResolveApprover(u.id)
+      if (!approver) {
+        unresolvable.push(`${u.firstName} ${u.lastName}`)
+        continue
+      }
+      resolved.push({
         cycleId,
         employeeId: u.id,
-        managerId: u.reportingManagerId ?? u.id,
-        status: 'NOT_STARTED' as const,
-      })),
-    })
+        managerId: approver.approverId,
+        status: 'NOT_STARTED',
+      })
+    }
+
+    if (resolved.length) {
+      await db.performanceReview.createMany({ data: resolved })
+    }
 
     await createAuditLog({
       userId: session.userId,
       action: 'REVIEW_CYCLE_CREATED',
       entityType: 'REVIEW_CYCLE',
       entityId: cycleId,
-      details: { scoped: toCreate.length },
+      details: { scoped: resolved.length, skippedNoReviewer: unresolvable },
     })
 
     revalidatePath(`/performance/cycles/${cycleId}`)
-    return { created: toCreate.length }
+    return {
+      created: resolved.length,
+      // Surfaced rather than swallowed — a silently skipped employee looks
+      // identical to one who was never in scope.
+      error: unresolvable.length
+        ? `Scoped ${resolved.length}. No reviewer could be resolved for: ${unresolvable.join(', ')}. Set a fallback approver in Settings → Approvals.`
+        : undefined,
+    }
   } catch (err) {
     console.error('scopeReviews error:', err)
     return { created: 0, error: 'Failed to scope reviews.' }
@@ -247,7 +279,7 @@ export async function transitionCycle(
   to: 'ACTIVE' | 'EVALUATION' | 'CLOSED'
 ): Promise<ReviewActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('performance.admin')
 
     const cycle = await db.reviewCycle.findUniqueOrThrow({ where: { id: cycleId } })
 
@@ -466,8 +498,21 @@ export async function submitReview(
       include: { cycle: true, goals: true },
     })
 
-    if (session.userId !== review.managerId && session.role !== 'ADMIN') {
+    if (session.userId !== review.managerId && !can(session.role, 'performance.admin')) {
       return { error: 'Only the assigned manager can submit this review.' }
+    }
+    // Belt and braces: reviews created before the scoping fix may still carry
+    // managerId === employeeId, and nobody should rate themselves.
+    try {
+      await assertNotSelf(session.userId, review.employeeId, 'performance review')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) {
+        return {
+          error:
+            'You cannot submit your own performance review. Ask HR to reassign the reviewer on this review.',
+        }
+      }
+      throw err
     }
     if (review.cycle.status !== 'EVALUATION') {
       return { error: 'Reviews can only be submitted during the EVALUATION phase.' }
@@ -529,6 +574,14 @@ export async function submitReview(
         overallRating: data.overallRating,
         probationDecision: data.probationDecision,
       },
+    })
+
+    await notify({
+      userId: review.employeeId,
+      type: 'PERFORMANCE_ACK_REQUIRED',
+      title: 'Your performance review is ready to read',
+      body: `${review.cycle.name} — your reviewer has submitted it and it is waiting for your acknowledgement.`,
+      linkUrl: `/performance/${data.reviewId}`,
     })
 
     if (data.probationDecision) {
@@ -613,7 +666,7 @@ export async function acknowledgeReview(
 
 export async function reopenReview(reviewId: string): Promise<ReviewActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('performance.admin')
     const review = await db.performanceReview.findUniqueOrThrow({ where: { id: reviewId } })
     if (review.status !== 'ACKNOWLEDGED') {
       return { error: 'Only acknowledged reviews can be reopened.' }
@@ -667,7 +720,7 @@ export async function getTeamReviews() {
 }
 
 export async function getCycleReviews(cycleId: string) {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
   return db.performanceReview.findMany({
     where: { cycleId },
     include: {
@@ -703,7 +756,7 @@ export async function getReviewDetail(reviewId: string) {
 }
 
 export async function listCycles() {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
   return db.reviewCycle.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
@@ -718,7 +771,7 @@ export async function listCycles() {
  * picker in ScopeAssignmentForm.
  */
 export async function listScopeCandidates(cycleId: string) {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
   const existing = await db.performanceReview.findMany({
     where: { cycleId },
     select: { employeeId: true },

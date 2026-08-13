@@ -1,6 +1,6 @@
 'use server'
 
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 
 export type ImportState = {
@@ -25,7 +25,7 @@ export async function importLeaveCsv(
   _state: ImportState,
   formData: FormData
 ): Promise<ImportState> {
-  await requireRole(['ADMIN'])
+  await requireCapability('leave.admin.import')
 
   const file = formData.get('csv') as File
   if (!file || file.size === 0) return { error: 'No CSV file provided' }

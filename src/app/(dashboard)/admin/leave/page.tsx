@@ -1,4 +1,4 @@
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 import { BalanceAdjustForm } from '@/components/leave/BalanceAdjustForm'
 import { EntitlementOverrideForm } from '@/components/leave/EntitlementOverrideForm'
@@ -6,7 +6,7 @@ import { CsvImportForm } from '@/components/leave/CsvImportForm'
 import { CarryForwardForm } from '@/components/leave/CarryForwardForm'
 
 export default async function AdminLeavePage() {
-  await requireRole(['ADMIN', 'HR'])
+  await requireCapability('leave.admin')
 
   const [users, leaveTypes] = await Promise.all([
     db.user.findMany({

@@ -1,12 +1,12 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 import { RewardCycleForm } from '@/components/rewards/RewardCycleForm'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { cn } from '@/lib/utils'
 
 export default async function NewRewardCyclePage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('rewards.admin')
 
   // Offer all review cycles that have reached EVALUATION or CLOSED as
   // "linkable" — earlier cycles don't have ratings yet so linking is premature.

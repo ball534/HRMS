@@ -3,7 +3,8 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { getSession } from '@/lib/session'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
+import { notify, notifyHr } from '@/lib/notify'
 
 // ============================================================
 // Learning (LMS) progress sync.
@@ -147,6 +148,8 @@ export async function saveLearningProgress(
     db.learningMaterial.findMany({ select: { key: true } }),
   ])
   const existingByLesson = new Map(existingLessons.map((l) => [l.lessonId, l]))
+  const existingTests = await db.learningTestProgress.findMany({ where: { userId } })
+  const wasLocked = new Set(existingTests.filter((t) => t.locked).map((t) => t.testId))
 
   // Module lessons only have the parts an admin actually uploaded, so their
   // "all done" check is against the material keys present for that lesson.
@@ -212,6 +215,40 @@ export async function saveLearningProgress(
     }),
   ])
 
+  // Tell HR when a learner locks themselves out.
+  //
+  // The client used to push a string onto an `hrEvents` array that was never
+  // persisted, emailed or shown to anyone — so the "HR has been notified"
+  // message the learner saw was not true, and nobody could act on a lockout
+  // they never heard about. Only newly-locked tests notify, so a repeated
+  // progress sync doesn't spam the HR inbox.
+  const newlyLocked = TEST_IDS.filter(
+    (id) => tests[id]?.locked && !wasLocked.has(id),
+  )
+  if (newlyLocked.length) {
+    const learner = await db.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true, lastName: true, department: true },
+    })
+    const who = learner ? `${learner.firstName} ${learner.lastName}` : 'A learner'
+
+    for (const testId of newlyLocked) {
+      await notifyHr({
+        type: 'LEARNING_LOCKED_OUT',
+        title: `Learning lockout: ${who} — ${testId}`,
+        body: `${who}${learner?.department ? ` (${learner.department})` : ''} has used all attempts on ${testId} and is locked out. Reset their access from Learning Progress.`,
+        linkUrl: '/admin/learning',
+      })
+      await notify({
+        userId,
+        type: 'LEARNING_LOCKED_OUT',
+        title: `You are locked out of ${testId}`,
+        body: 'HR has been notified and can reset your access. You do not need to do anything else.',
+        linkUrl: '/learning',
+      })
+    }
+  }
+
   if (survey.done) {
     await db.learningSurvey.upsert({
       where: { userId },
@@ -250,7 +287,7 @@ export type MaterialRow = {
 }
 
 export async function listLearningMaterials(): Promise<MaterialRow[]> {
-  await requireRole(['ADMIN'])
+  await requireCapability('learning.admin')
 
   const rows = await db.learningMaterial.findMany({
     include: { uploadedBy: { select: { firstName: true, lastName: true } } },
@@ -284,7 +321,7 @@ export type ModuleLessonRow = {
 }
 
 export async function listModuleLessons(): Promise<ModuleLessonRow[]> {
-  await requireRole(['ADMIN'])
+  await requireCapability('learning.admin')
 
   const rows = await db.learningModuleLesson.findMany({
     include: { createdBy: { select: { firstName: true, lastName: true } } },
@@ -304,7 +341,7 @@ export async function createModuleLesson(data: {
   title: string
   summary?: string
 }): Promise<{ ok: boolean; lesson?: ModuleLessonRow; error?: string }> {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('learning.admin')
 
   const title = data.title?.trim()
   if (!title) return { ok: false, error: 'Title is required' }
@@ -338,7 +375,7 @@ export async function createModuleLesson(data: {
 export async function deleteModuleLesson(
   id: string
 ): Promise<{ ok: boolean; error?: string }> {
-  await requireRole(['ADMIN'])
+  await requireCapability('learning.admin')
 
   const lesson = await db.learningModuleLesson.findUnique({ where: { id } })
   if (!lesson) return { ok: false, error: 'Not found' }
@@ -370,7 +407,7 @@ export type LearnerRow = {
 }
 
 export async function getAllLearningProgress(): Promise<LearnerRow[]> {
-  await requireRole(['ADMIN'])
+  await requireCapability('learning.admin')
 
   const users = await db.user.findMany({
     where: { status: 'ACTIVE' },

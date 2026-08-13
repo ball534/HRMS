@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
 
 const HolidaySchema = z.object({
@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('holidays.write')
 
   let body: unknown
   try {
@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('holidays.write')
 
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')

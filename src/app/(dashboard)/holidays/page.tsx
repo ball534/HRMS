@@ -1,8 +1,8 @@
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { HolidayManager } from '@/components/holidays/HolidayManager'
 
 export default async function HolidaysPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('holidays.write')
 
   return (
     <div className="space-y-6">

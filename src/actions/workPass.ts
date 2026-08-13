@@ -3,8 +3,9 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
+import { PASS_USER_SELECT, daysUntil, getLeadDaysConfig, reminderLeadDays } from '@/lib/workPasses'
 
 export type WorkPassActionState = {
   success?: boolean
@@ -40,32 +41,16 @@ const upsertSchema = z.object({
   notes: z.string().optional(),
 })
 
-/**
- * Reminder lead time (days before expiry) per pass type:
- *   - Employment Pass + S Pass: 4 months
- *   - Work Permit: 2 months
- *   - other passes: 3 months (sensible default)
- */
-function reminderLeadDays(passType: string): number {
-  switch (passType) {
-    case 'SG_EMPLOYMENT_PASS':
-    case 'SG_S_PASS':
-    case 'MY_EMPLOYMENT_PASS':
-      return 120
-    case 'SG_WORK_PERMIT':
-    case 'MY_WORK_PERMIT':
-      return 60
-    default:
-      return 90
-  }
-}
+// reminderLeadDays / daysUntil / PASS_USER_SELECT now live in
+// src/lib/workPasses.ts so the daily cron can share them without going
+// through a server action.
 
 export async function upsertWorkPass(
   _state: WorkPassActionState,
   formData: FormData,
 ): Promise<WorkPassActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('workpass.write')
 
     const raw = Object.fromEntries(formData.entries())
     for (const k of ['passId', 'issueDate', 'expiryDate', 'levy', 'applicationDate', 'approvalDate']) {
@@ -136,7 +121,7 @@ export async function upsertWorkPass(
 
 export async function deleteWorkPass(passId: string): Promise<WorkPassActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('workpass.write')
     const pass = await db.workPass.findUniqueOrThrow({ where: { id: passId } })
     await db.workPass.delete({ where: { id: passId } })
     await createAuditLog({
@@ -155,27 +140,6 @@ export async function deleteWorkPass(passId: string): Promise<WorkPassActionStat
   }
 }
 
-const PASS_USER_SELECT = {
-  id: true,
-  firstName: true,
-  lastName: true,
-  email: true,
-  country: true,
-  status: true,
-  position: true,
-  department: true,
-  company: true,
-  passportNumber: true,
-  passportExpiry: true,
-} as const
-
-function daysUntil(expiry: Date | null): number | null {
-  if (!expiry) return null
-  const today = new Date()
-  today.setUTCHours(0, 0, 0, 0)
-  return Math.floor((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-}
-
 /**
  * Active users + their work passes, grouped using the *type-specific* reminder
  * lead time (EP/S Pass = 4 months, Work Permit = 2 months):
@@ -184,7 +148,7 @@ function daysUntil(expiry: Date | null): number | null {
  *   - ok:      outside the window
  */
 export async function getWorkPassDashboard() {
-  await requireRole(['ADMIN'])
+  await requireCapability('workpass.read')
 
   const passes = await db.workPass.findMany({
     where: { passType: { not: 'NONE' } },
@@ -193,11 +157,14 @@ export async function getWorkPassDashboard() {
   })
 
   const active = passes.filter(p => p.user.status === 'ACTIVE')
+  // Lead times are read once, from Settings → Work passes, and reused for
+  // every pass rather than being hardcoded per type.
+  const leadDays = await getLeadDaysConfig()
   const bucket = (p: (typeof passes)[number]): 'expired' | 'due' | 'ok' => {
     const d = daysUntil(p.expiryDate)
     if (d === null) return 'ok'
     if (d < 0) return 'expired'
-    if (d <= reminderLeadDays(p.passType)) return 'due'
+    if (d <= reminderLeadDays(p.passType, leadDays)) return 'due'
     return 'ok'
   }
 
@@ -205,29 +172,19 @@ export async function getWorkPassDashboard() {
     expired: active.filter(p => bucket(p) === 'expired'),
     due: active.filter(p => bucket(p) === 'due'),
     ok: active.filter(p => bucket(p) === 'ok'),
+    // Surfaced so the dashboard can say what window it is actually using.
+    leadDays,
   }
 }
 
-/**
- * Passes whose expiry is exactly `leadDays` away today (one-shot reminder),
- * plus any already expired. Used by the daily cron to email HR.
- */
-export async function getWorkPassesForReminder() {
-  const passes = await db.workPass.findMany({
-    where: { passType: { not: 'NONE' }, expiryDate: { not: null }, user: { status: 'ACTIVE' } },
-    include: { user: { select: PASS_USER_SELECT } },
-  })
-
-  return passes.filter(p => {
-    const d = daysUntil(p.expiryDate)
-    if (d === null) return false
-    // Fire on the exact lead-day threshold (single reminder, no repeat spam).
-    return d === reminderLeadDays(p.passType)
-  })
-}
+// The cron's reminder query used to live here as an exported (and completely
+// unauthenticated) server action that returned every foreign worker's FIN,
+// passport number and expiry date to any caller. It is now
+// `findWorkPassesDueForReminder` in src/lib/workPasses.ts — reachable by the
+// cron, not by the network.
 
 export async function getUserWorkPasses(userId: string) {
-  await requireRole(['ADMIN'])
+  await requireCapability('workpass.read')
   return db.workPass.findMany({
     where: { userId },
     orderBy: { createdAt: 'desc' },

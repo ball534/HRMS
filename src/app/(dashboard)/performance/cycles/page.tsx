@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { listCycles } from '@/actions/performance'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { cn } from '@/lib/utils'
@@ -27,7 +27,7 @@ function fmt(d: Date | string | null) {
 }
 
 export default async function CyclesListPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
   const cycles = await listCycles()
 
   return (

@@ -3,7 +3,7 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
 
 export type BlackoutActionState = {
@@ -31,7 +31,7 @@ export async function upsertBlackout(
   formData: FormData,
 ): Promise<BlackoutActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('blackouts.write')
     const raw = Object.fromEntries(formData.entries())
     if (raw.id === '') delete (raw as Record<string, unknown>).id
 
@@ -95,7 +95,7 @@ export async function upsertBlackout(
 
 export async function deleteBlackout(id: string): Promise<BlackoutActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('blackouts.write')
     await db.blackoutWindow.delete({ where: { id } })
     await createAuditLog({
       userId: session.userId,
@@ -112,7 +112,7 @@ export async function deleteBlackout(id: string): Promise<BlackoutActionState> {
 }
 
 export async function listBlackouts() {
-  await requireRole(['ADMIN'])
+  await requireCapability('blackouts.write')
   return db.blackoutWindow.findMany({ orderBy: { startDate: 'asc' } })
 }
 

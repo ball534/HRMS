@@ -15,6 +15,10 @@ const initialState = { error: undefined }
 function LoginForm() {
   const searchParams = useSearchParams()
   const resetSuccess = searchParams.get('reset') === 'success'
+  // Set by /api/auth/revoked when the DAL finds a session whose account is no
+  // longer active — without this the person just lands back on login with no
+  // idea why they were kicked out.
+  const sessionRevoked = searchParams.get('reason') === 'session_revoked'
   const [state, formAction, isPending] = useActionState(login, initialState)
 
   return (
@@ -30,6 +34,12 @@ function LoginForm() {
         {resetSuccess && (
           <p className="mb-4 text-sm text-center text-green-600">
             Your password has been reset. Please sign in with your new password.
+          </p>
+        )}
+        {sessionRevoked && (
+          <p className="mb-4 text-sm text-center text-muted-foreground" role="status">
+            Your session has ended because your account is no longer active.
+            Contact HR if you believe this is a mistake.
           </p>
         )}
         <form action={formAction} className="space-y-4">

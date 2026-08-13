@@ -48,6 +48,86 @@ export async function getLeaveAuditLogs(userId: string) {
   })
 }
 
+/**
+ * Filtered audit log for the governance screen.
+ *
+ * Audit rows were being written for expenses, timesheets, holidays, rewards,
+ * letters and work passes and then never surfaced anywhere — `getLeaveAuditLogs`
+ * above was the only reader in the product, and only for leave. So the data
+ * existed but no question could be asked of it.
+ */
+export type AuditLogFilters = {
+  actorId?: string
+  entityType?: AuditEntityType
+  action?: AuditAction
+  entityId?: string
+  from?: Date
+  to?: Date
+  /** Only reversals and other exception events. */
+  exceptionsOnly?: boolean
+  take?: number
+  skip?: number
+}
+
+/** Actions that represent an override, reversal or data egress. */
+export const EXCEPTION_ACTIONS: AuditAction[] = [
+  'LEAVE_REVERSED',
+  'EXPENSE_REVERSED',
+  'TIME_ENTRY_REVERSED',
+  'REVIEW_CYCLE_REVERSED',
+  'PERFORMANCE_REVIEW_REVERSED',
+  'REWARD_CYCLE_REVERSED',
+  'REWARD_ALLOCATION_REVERSED',
+  'EMPLOYMENT_LETTER_REVERSED',
+  'LEARNING_LOCKOUT_REVERSED',
+  'PAYROLL_EXPORTED',
+  'EXPENSE_EXPORTED',
+  'RATINGS_EXPORTED',
+  'LEAVE_DELETED',
+  'EXPENSE_DELETED',
+  'TIME_ENTRY_DELETED',
+  'TIME_ENTRY_UNLOCKED',
+  'USER_OFFBOARDED',
+  'SETTING_UPDATED',
+  'STATUTORY_RULES_CREATED',
+]
+
+export async function queryAuditLogs(filters: AuditLogFilters = {}) {
+  const take = Math.min(filters.take ?? 100, 500)
+
+  const where = {
+    ...(filters.actorId ? { userId: filters.actorId } : {}),
+    ...(filters.entityType ? { entityType: filters.entityType } : {}),
+    ...(filters.entityId ? { entityId: filters.entityId } : {}),
+    ...(filters.action
+      ? { action: filters.action }
+      : filters.exceptionsOnly
+        ? { action: { in: EXCEPTION_ACTIONS } }
+        : {}),
+    ...(filters.from || filters.to
+      ? {
+          createdAt: {
+            ...(filters.from ? { gte: filters.from } : {}),
+            ...(filters.to ? { lte: filters.to } : {}),
+          },
+        }
+      : {}),
+  }
+
+  const [rows, total] = await Promise.all([
+    db.auditLog.findMany({
+      where,
+      include: { user: { select: { id: true, firstName: true, lastName: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+      take,
+      skip: filters.skip ?? 0,
+    }),
+    db.auditLog.count({ where }),
+  ])
+
+  return { rows, total }
+}
+
 export async function createAuditLog({
   userId,
   action,

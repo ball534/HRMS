@@ -1,8 +1,10 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
+import { resolveRules } from '@/lib/statutory'
+import { getSetting } from '@/lib/settings'
 import {
   calculateAnnualEntitlement,
   calculateProRataEntitlement,
@@ -11,7 +13,6 @@ import {
   carryForwardExpiryFor,
 } from '@/lib/leaveEntitlement'
 
-const HR_ROLES = ['ADMIN', 'HR']
 
 // ============================================================
 // Helpers
@@ -63,7 +64,15 @@ export async function getOrCreateBalance(
 
   if (leaveType.name === 'Annual Leave') {
     const startDate = user.startDate ?? new Date(year, 0, 1)
-    const full = calculateAnnualEntitlement(user.employmentType, startDate, year)
+    // Entitlement figures come from the employee's own country rule set now,
+    // rather than one hardcoded rulebook applied to both markets.
+    const { rules } = await resolveRules(user.country, new Date(year, 11, 31))
+    const full = calculateAnnualEntitlement(
+      user.employmentType,
+      startDate,
+      year,
+      rules.annualLeave,
+    )
     entitlement = calculateProRataEntitlement(full, startDate, year)
   } else if (leaveType.name === 'Maternity Leave') {
     if (user.gender === 'Male') {
@@ -136,7 +145,7 @@ export async function adjustBalance(
   _state: AdjustBalanceState,
   formData: FormData
 ): Promise<AdjustBalanceState> {
-  const session = await requireRole(HR_ROLES)
+  const session = await requireCapability('leave.admin')
 
   const userId = formData.get('userId') as string
   const leaveTypeId = formData.get('leaveTypeId') as string
@@ -189,7 +198,7 @@ export async function setEntitlementOverride(
   _state: SetEntitlementState,
   formData: FormData
 ): Promise<SetEntitlementState> {
-  const session = await requireRole(HR_ROLES)
+  const session = await requireCapability('leave.admin')
 
   const userId = formData.get('userId') as string
   const leaveTypeId = formData.get('leaveTypeId') as string
@@ -256,14 +265,16 @@ export type CarryForwardState = {
  *
  * Rules (per HR team, 2026-06):
  * - available = entitlement + carryForward + adjustment - used (pending excluded)
- * - ALL unused days carry forward (no cap)
+ * - unused days carry forward up to the `leave.carryForwardCap` setting
+ *   (default 5 — the figure the carry-forward screen has always displayed;
+ *   the code used to carry the whole unused balance uncapped)
  * - Carryover expires March 31 of the new year
  */
 export async function runCarryForward(
   _state: CarryForwardState,
   formData: FormData
 ): Promise<CarryForwardState> {
-  const session = await requireRole(HR_ROLES)
+  const session = await requireCapability('leave.admin')
 
   const yearStr = formData.get('year') as string
   if (!yearStr) return { error: 'year is required' }
@@ -278,23 +289,30 @@ export async function runCarryForward(
 
     const prevBalances = await db.leaveBalance.findMany({
       where: { leaveTypeId: annualLeave.id, year: prevYear },
-      include: { user: { select: { employmentType: true, startDate: true } } },
+      include: { user: { select: { employmentType: true, startDate: true, country: true } } },
     })
 
+    const carryForwardCap = await getSetting('leave.carryForwardCap')
     const expiresAt = carryForwardExpiryFor(year)
     let processed = 0
 
     for (const prev of prevBalances) {
-      // Carry the full unused portion — no cap.
+      // Apply the carry-forward cap. The carry-forward screen has always told
+      // HR that a 5-day cap applies; the code carried the entire unused balance
+      // regardless, so a long-serving employee could roll over 20+ days. The cap
+      // is now a setting (Settings -> Leave), defaulting to the 5 days the UI
+      // has been promising all along.
       const prevEntitlement = prev.entitlementOverride ?? prev.entitlement
       const available = prevEntitlement + prev.carryForward + prev.adjustment - prev.used
-      const carryForwardDays = Math.max(available, 0)
+      const carryForwardDays = Math.min(Math.max(available, 0), carryForwardCap)
 
       const startDate = prev.user.startDate ?? new Date(year, 0, 1)
+      const { rules } = await resolveRules(prev.user.country, new Date(year, 11, 31))
       const fullEntitlement = calculateAnnualEntitlement(
         prev.user.employmentType,
         startDate,
-        year
+        year,
+        rules.annualLeave,
       )
       const newEntitlement = calculateProRataEntitlement(fullEntitlement, startDate, year)
 

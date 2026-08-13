@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { getWorkPassDashboard } from '@/actions/workPass'
 import { cn } from '@/lib/utils'
 
@@ -37,7 +37,7 @@ function daysFrom(d: Date | null): string {
 }
 
 export default async function WorkPassesDashboardPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('workpass.read')
   const dashboard = await getWorkPassDashboard()
 
   const buckets: {

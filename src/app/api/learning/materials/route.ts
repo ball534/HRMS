@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
 import { db } from '@/lib/db'
 
@@ -78,7 +78,7 @@ export async function GET() {
 
 // ---- POST: upload/replace a material (admin only) ----
 export async function POST(req: NextRequest) {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('learning.admin')
 
   const formData = await req.formData()
   const key = String(formData.get('key') ?? '')
@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
 
 // ---- DELETE: revert a material to the bundled default (admin only) ----
 export async function DELETE(req: NextRequest) {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('learning.admin')
 
   const key = req.nextUrl.searchParams.get('key') ?? ''
   if (!ONBOARDING_KEY_RE.test(key) && !MODULE_KEY_RE.test(key)) {

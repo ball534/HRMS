@@ -1,11 +1,11 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { ReviewCycleForm } from '@/components/performance/ReviewCycleForm'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { cn } from '@/lib/utils'
 
 export default async function NewCyclePage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
 
   return (
     <div className="space-y-6">

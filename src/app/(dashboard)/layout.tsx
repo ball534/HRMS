@@ -17,6 +17,9 @@ export default async function DashboardLayout({
   const directReportsCount = await db.user.count({
     where: { reportingManagerId: session.userId, status: 'ACTIVE' },
   })
+  const unreadCount = await db.notification.count({
+    where: { userId: session.userId, readAt: null },
+  })
 
   const name = user ? `${user.firstName} ${user.lastName}` : 'User'
   const initials = user
@@ -33,7 +36,7 @@ export default async function DashboardLayout({
           hasDirectReports={directReportsCount > 0}
         />
         <div className="flex flex-1 flex-col overflow-hidden">
-          <TopBar user={{ name, email: user?.email ?? '', initials }} />
+          <TopBar user={{ name, email: user?.email ?? '', initials }} unreadCount={unreadCount} />
           <main className="flex-1 overflow-y-auto p-5 md:p-8">{children}</main>
         </div>
       </div>

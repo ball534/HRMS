@@ -1,9 +1,9 @@
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 import { AddEmployeeForm } from '@/components/people/AddEmployeeForm'
 
 export default async function NewPersonPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('people.write')
 
   const managers = await db.user.findMany({
     where: { status: 'ACTIVE' },

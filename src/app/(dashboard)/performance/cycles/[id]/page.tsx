@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 import { getCycleReviews, listScopeCandidates } from '@/actions/performance'
 import { CycleTransitionControls } from '@/components/performance/CycleTransitionControls'
@@ -60,7 +60,7 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 export default async function CycleDetailPage({ params }: Props) {
-  await requireRole(['ADMIN'])
+  await requireCapability('performance.admin')
   const { id } = await params
 
   const cycle = await db.reviewCycle.findUnique({

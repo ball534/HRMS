@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { getRewardCycle, listCandidatesForCycle } from '@/actions/rewards'
 import { AllocationManager } from '@/components/rewards/AllocationManager'
 import { CycleTransitionControls } from '@/components/rewards/CycleTransitionControls'
@@ -28,7 +28,7 @@ function fmt(d: Date | string | null) {
 }
 
 export default async function RewardCycleDetailPage({ params }: Props) {
-  await requireRole(['ADMIN'])
+  await requireCapability('rewards.admin')
   const { id } = await params
 
   const cycle = await getRewardCycle(id)
