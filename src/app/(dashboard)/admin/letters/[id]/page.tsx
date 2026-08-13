@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { getLetterDetail, getActiveOfficers } from '@/actions/letters'
 import { LetterWorkspace } from '@/components/letters/LetterWorkspace'
 
@@ -8,7 +8,7 @@ type Props = { params: Promise<{ id: string }> }
 
 export default async function LetterDetailPage({ params }: Props) {
   const { id } = await params
-  const session = await requireRole(['ADMIN', 'HR', 'MANAGER', 'EMPLOYEE', 'CONTRACTOR'])
+  const session = await requireCapability('letters.read')
   const [letter, officers] = await Promise.all([getLetterDetail(id), getActiveOfficers().catch(() => [])])
 
   if (!letter) notFound()

@@ -174,6 +174,8 @@ type Props = {
   currentYear?: number
   careerEvents?: CareerEventItem[]
   workPassSlot?: React.ReactNode
+  /** Offboarding control — present only for callers holding people.offboard. */
+  offboardSlot?: React.ReactNode
 }
 
 const LEAVE_STATUS_STYLES: Record<string, string> = {
@@ -226,6 +228,7 @@ export function EmployeeProfile({
   currentYear,
   careerEvents = [],
   workPassSlot,
+  offboardSlot,
 }: Props) {
   const [editing, setEditing] = useState(false)
   const [resettingPassword, setResettingPassword] = useState(false)
@@ -345,6 +348,7 @@ export function EmployeeProfile({
               >
                 Edit
               </button>
+              {offboardSlot}
             </div>
           )}
         </div>

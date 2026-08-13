@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapabilityApi, withApiAuth } from '@/lib/dal'
+import { createAuditLog } from '@/lib/audit'
 import { EXPENSE_CATEGORIES } from '@/lib/expense-constants'
 
 const categoryMap = Object.fromEntries(
@@ -9,7 +10,13 @@ const categoryMap = Object.fromEntries(
 )
 
 export async function GET() {
-  await requireRole(['ADMIN'])
+  return withApiAuth(() => handler())
+}
+
+async function handler() {
+  // Dumps every APPROVED claim with employee emails and receipt links. Logged
+  // so there is a record of who pulled the bank file and when.
+  const session = await requireCapabilityApi('expense.export')
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://insidehr-production.up.railway.app'
 
@@ -18,7 +25,7 @@ export async function GET() {
     include: {
       user: { select: { firstName: true, lastName: true, email: true } },
       approver: { select: { firstName: true, lastName: true } },
-      receipts: { select: { s3Key: true, fileName: true } },
+      receipts: { select: { blobId: true, fileName: true } },
     },
     orderBy: [
       { user: { firstName: 'asc' } },
@@ -41,7 +48,9 @@ export async function GET() {
     Currency: e.currency,
     Amount: parseFloat(e.amount.toString()),
     'Approved By': e.approver ? `${e.approver.firstName} ${e.approver.lastName}` : '',
-    Receipts: e.receipts.map(r => `https://drive.google.com/file/d/${r.s3Key}/view`).join('\n'),
+    Receipts: e.receipts
+      .map(r => (r.blobId ? `${baseUrl}/api/files/${r.blobId}` : r.fileName))
+      .join('\n'),
   }))
 
   // ---------- Summary sheet (grouped by employee + currency) ----------
@@ -111,6 +120,22 @@ export async function GET() {
 
   // ---------- Generate buffer ----------
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+  await createAuditLog({
+    userId: session.userId,
+    action: 'EXPENSE_EXPORTED',
+    entityType: 'EXPENSE',
+    details: {
+      kind: 'reimbursement_run',
+      claimCount: expenses.length,
+      totalsByCurrency: expenses.reduce<Record<string, number>>((acc, e) => {
+        acc[e.currency] = (acc[e.currency] ?? 0) + Number(e.amount)
+        return acc
+      }, {}),
+      includesEmails: true,
+      includesReceiptLinks: true,
+    },
+  })
 
   const today = new Date().toISOString().split('T')[0]
   const filename = `Reimbursement_Export_${today}.xlsx`

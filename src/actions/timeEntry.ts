@@ -3,9 +3,20 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { notify } from '@/lib/notify'
+import { getSetting } from '@/lib/settings'
+import {
+  assertNotSelf,
+  resolveApprover,
+  NoApproverError,
+  SelfApprovalError,
+  type ApproverResolution,
+} from '@/lib/approvers'
 import { createAuditLog } from '@/lib/audit'
 import { computePayroll, monthBounds, weekBounds } from '@/lib/payroll'
+import { resolveRules } from '@/lib/statutory'
 
 // ============================================================
 // Types & schemas
@@ -147,7 +158,7 @@ export async function deleteTimeEntry(entryId: string): Promise<TimeEntryActionS
   try {
     const session = await verifySession()
     const entry = await db.timeEntry.findUniqueOrThrow({ where: { id: entryId } })
-    if (entry.userId !== session.userId && session.role !== 'ADMIN') {
+    if (entry.userId !== session.userId && !can(session.role, 'time.admin')) {
       return { error: 'Not authorised.' }
     }
     if (entry.status !== 'DRAFT' && entry.status !== 'REJECTED') {
@@ -200,13 +211,25 @@ export async function submitWeek(weekStartIso: string): Promise<TimeEntryActionS
       return { error: 'No draft entries to submit for this week.' }
     }
 
+    // Route to a real approver. `approverId: null` used to be written whenever
+    // the employee had no reporting manager, which meant the submitted week
+    // appeared in nobody's queue, could not be edited, and never reached
+    // payroll — the hours were simply lost.
+    let approver: ApproverResolution
+    try {
+      approver = await resolveApprover(session.userId)
+    } catch (err) {
+      if (err instanceof NoApproverError) return { error: err.message }
+      throw err
+    }
+
     const now = new Date()
     await db.timeEntry.updateMany({
       where: { id: { in: drafts.map(d => d.id) } },
       data: {
         status: 'SUBMITTED',
         submittedAt: now,
-        approverId: user.reportingManagerId ?? null,
+        approverId: approver.approverId,
       },
     })
 
@@ -218,6 +241,18 @@ export async function submitWeek(weekStartIso: string): Promise<TimeEntryActionS
         entityId: d.id,
       })
     }
+
+    const submitter = await db.user.findUnique({
+      where: { id: session.userId },
+      select: { firstName: true, lastName: true },
+    })
+    await notify({
+      userId: approver.approverId,
+      type: 'TIMESHEET_SUBMITTED',
+      title: `Timesheet submitted by ${submitter?.firstName} ${submitter?.lastName}`,
+      body: `${drafts.length} day(s) for the week of ${start.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })} need approval.`,
+      linkUrl: '/time/approvals',
+    })
 
     revalidatePath('/time')
     revalidatePath('/time/approvals')
@@ -237,8 +272,14 @@ export async function approveEntry(entryId: string): Promise<TimeEntryActionStat
     const session = await verifySession()
     const entry = await db.timeEntry.findUniqueOrThrow({ where: { id: entryId } })
 
-    if (entry.approverId !== session.userId && session.role !== 'ADMIN') {
+    if (entry.approverId !== session.userId && !can(session.role, 'time.admin')) {
       return { error: 'You are not the assigned approver.' }
+    }
+    try {
+      await assertNotSelf(session.userId, entry.userId, 'timesheet')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) return { error: err.message }
+      throw err
     }
     if (entry.status !== 'SUBMITTED') {
       return { error: `Cannot approve a ${entry.status.toLowerCase()} entry.` }
@@ -269,13 +310,16 @@ export async function approveEntries(entryIds: string[]): Promise<TimeEntryActio
 
     const entries = await db.timeEntry.findMany({
       where: { id: { in: entryIds } },
-      select: { id: true, status: true, approverId: true },
+      select: { id: true, status: true, approverId: true, userId: true },
     })
 
+    const blockSelf = await getSetting('approvals.blockSelfApproval')
     const allowed = entries.filter(
       e =>
         e.status === 'SUBMITTED' &&
-        (e.approverId === session.userId || session.role === 'ADMIN'),
+        (e.approverId === session.userId || can(session.role, 'time.admin')) &&
+        // Bulk approve must not become a way around the self-approval rule.
+        !(blockSelf && e.userId === session.userId),
     )
     if (allowed.length === 0) return { error: 'None of the selected entries are approvable by you.' }
 
@@ -318,8 +362,14 @@ export async function rejectEntry(
     }
 
     const entry = await db.timeEntry.findUniqueOrThrow({ where: { id: parsed.data.entryId } })
-    if (entry.approverId !== session.userId && session.role !== 'ADMIN') {
+    if (entry.approverId !== session.userId && !can(session.role, 'time.admin')) {
       return { error: 'You are not the assigned approver.' }
+    }
+    try {
+      await assertNotSelf(session.userId, entry.userId, 'timesheet')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) return { error: err.message }
+      throw err
     }
     if (entry.status !== 'SUBMITTED') {
       return { error: `Cannot reject a ${entry.status.toLowerCase()} entry.` }
@@ -336,6 +386,18 @@ export async function rejectEntry(
       entityId: entry.id,
       details: { reason: parsed.data.reason },
     })
+
+    // A rejected day reverts to DRAFT and vanishes from the "submit week"
+    // counter, so without this the employee had no way of knowing the day was
+    // sent back — it just sat there unpaid.
+    await notify({
+      userId: entry.userId,
+      type: 'TIMESHEET_REJECTED',
+      title: 'A timesheet day was sent back to you',
+      body: `${new Date(entry.workDate).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' })} — "${parsed.data.reason}". Correct it and submit again.`,
+      linkUrl: '/time',
+    })
+
     revalidatePath('/time/approvals')
     revalidatePath('/time')
     return { success: true }
@@ -351,7 +413,7 @@ export async function rejectEntry(
 
 export async function unlockEntry(entryId: string): Promise<TimeEntryActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('time.admin')
     const entry = await db.timeEntry.findUniqueOrThrow({ where: { id: entryId } })
     if (entry.status !== 'APPROVED') {
       return { error: 'Only approved entries can be unlocked.' }
@@ -424,7 +486,7 @@ export async function getPendingApprovals() {
 
 /** Monthly payroll roll-up: per part-timer, the computed split + pay. */
 export async function getMonthlyPayroll(year: number, monthIndex: number) {
-  await requireRole(['ADMIN'])
+  await requireCapability('payroll.read')
   const { start, end } = monthBounds(year, monthIndex)
 
   const partTimers = await db.user.findMany({
@@ -457,23 +519,47 @@ export async function getMonthlyPayroll(year: number, monthIndex: number) {
     byUser.set(e.userId, arr)
   }
 
-  return partTimers.map(u => {
+  // Overtime caps and multipliers differ by country. They used to be Malaysian
+  // figures applied to everyone; now each employee is costed against their own
+  // country's rule set as it stood at the end of the pay month.
+  const asOf = end
+  const [sgRules, myRules] = await Promise.all([
+    resolveRules('SG', asOf),
+    resolveRules('MY', asOf),
+  ])
+
+  const rows = partTimers.map(u => {
     const entries = byUser.get(u.id) ?? []
     const dailyHours = u.normalDailyHours ? Number(u.normalDailyHours) : 8
     const rate = u.hourlyRate ? Number(u.hourlyRate) : 0
+    const resolved = u.country === 'MY' ? myRules : sgRules
     const breakdown = computePayroll(
       entries.map(e => ({
         workDate: e.workDate,
         hoursWorked: Number(e.hoursWorked),
         isPublicHoliday: e.isPublicHoliday,
       })),
-      { normalDailyHours: dailyHours, hourlyRate: rate },
+      { normalDailyHours: dailyHours, hourlyRate: rate, rules: resolved.rules.overtime },
     )
     return {
       user: u,
       currency: u.country === 'MY' ? 'MYR' : 'SGD',
       entryCount: entries.length,
       breakdown,
+      // Surfaced so the payroll screen can warn that a figure rests on
+      // statutory values nobody has signed off yet.
+      rulesVerified: resolved.verified,
+      // The multipliers this row was actually costed with, so the table can
+      // label its columns honestly rather than hardcoding one country's rules.
+      overtimeRules: resolved.rules.overtime,
+      // A missing hourly rate silently produced 0.00 in the UI and in the
+      // export with no warning at all.
+      missingHourlyRate: rate === 0,
+      // A missing daily-hours value defaults to 8, which changes where the
+      // overtime threshold falls.
+      assumedDailyHours: u.normalDailyHours === null,
     }
   })
+
+  return rows
 }

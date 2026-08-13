@@ -1,9 +1,9 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
-import { getDownloadUrl, deleteFile } from '@/lib/google-drive'
+import { storage } from '@/lib/storage'
 
 // ============================================================
 // Types
@@ -24,7 +24,8 @@ export type DocumentRecord = {
   category: DocumentCategory
   employeeId: string | null
   employee: { firstName: string; lastName: string } | null
-  s3Key: string
+  /** Blob id in FileBlob. Null only on legacy rows that predate Postgres storage. */
+  blobId: string | null
   fileName: string
   fileSize: number
   mimeType: string
@@ -58,15 +59,16 @@ export async function uploadDocument(data: {
   scope: 'COMPANY' | 'EMPLOYEE'
   category: DocumentCategory
   employeeIds?: string[]
-  s3Key: string
+  /** Blob id returned by the upload route, which has already stored the bytes. */
+  blobId: string
   fileName: string
   fileSize: number
   mimeType: string
 }): Promise<{ success: boolean; count?: number; error?: string }> {
   const session = await verifySession()
-  const { name, scope, category, employeeIds = [], s3Key, fileName, fileSize, mimeType } = data
+  const { name, scope, category, employeeIds = [], blobId, fileName, fileSize, mimeType } = data
 
-  if (!name || !s3Key || !fileName || !fileSize || !mimeType || !scope || !category) {
+  if (!name || !blobId || !fileName || !fileSize || !mimeType || !scope || !category) {
     return { success: false, error: 'Missing required fields' }
   }
   if (!VALID_CATEGORIES.includes(category)) {
@@ -94,7 +96,7 @@ export async function uploadDocument(data: {
         scope: 'COMPANY',
         category,
         employeeId: null,
-        s3Key,
+        blobId,
         fileName,
         fileSize,
         mimeType,
@@ -111,13 +113,18 @@ export async function uploadDocument(data: {
     return { success: true, count: 1 }
   }
 
-  // EMPLOYEE scope — create one row per target employee, all sharing s3Key
+  // EMPLOYEE scope — one row per target employee, all pointing at the same blob.
+  //
+  // The upload route's `put` took the first reference; each *additional* row
+  // needs its own. Previously N employees shared one physical Drive file with no
+  // accounting at all, so one of them deleting "their" copy could bin the shared
+  // original for everybody.
   const rows = employeeIds.map((employeeId) => ({
     name,
     scope: 'EMPLOYEE' as const,
     category,
     employeeId,
-    s3Key,
+    blobId,
     fileName,
     fileSize,
     mimeType,
@@ -126,11 +133,15 @@ export async function uploadDocument(data: {
 
   const result = await db.document.createMany({ data: rows })
 
+  for (let i = 1; i < result.count; i++) {
+    await storage.addRef(blobId)
+  }
+
   await createAuditLog({
     userId: session.userId,
     action: 'DOCUMENT_UPLOADED',
     entityType: 'DOCUMENT',
-    entityId: s3Key,
+    entityId: blobId,
     details: { name, scope, category, employeeIds, count: result.count },
   })
 
@@ -213,9 +224,11 @@ export async function getDocuments(params: GetDocumentsParams = {}): Promise<Doc
     orderBy: { [sortBy]: sortDir },
   })
 
+  // No per-file round trip any more: the download URL is just the blob route,
+  // which does its own authorization and audit logging when it is actually hit.
   return Promise.all(
     docs.map(async (doc) => {
-      const downloadUrl = await getDownloadUrl(doc.s3Key)
+      const downloadUrl = doc.blobId ? `/api/files/${doc.blobId}` : ''
       const canDelete = isHR || doc.uploadedById === session.userId
       return {
         id: doc.id,
@@ -224,7 +237,7 @@ export async function getDocuments(params: GetDocumentsParams = {}): Promise<Doc
         category: doc.category as DocumentCategory,
         employeeId: doc.employeeId,
         employee: doc.employee,
-        s3Key: doc.s3Key,
+        blobId: doc.blobId,
         fileName: doc.fileName,
         fileSize: doc.fileSize,
         mimeType: doc.mimeType,
@@ -268,7 +281,7 @@ export type EmployeeFolderSummary = {
 }
 
 export async function getEmployeeFolderSummary(): Promise<EmployeeFolderSummary[]> {
-  await requireRole(['ADMIN', 'HR'])
+  await requireCapability('documents.admin')
 
   const employees = await db.user.findMany({
     where: { status: 'ACTIVE' },
@@ -314,19 +327,12 @@ export async function deleteDocument(id: string): Promise<{ success: boolean; er
     return { success: false, error: 'Forbidden' }
   }
 
-  // Count other rows sharing the same Drive file (mass-push case)
-  const others = await db.document.count({
-    where: { s3Key: doc.s3Key, id: { not: id } },
-  })
-
   await db.document.delete({ where: { id } })
 
-  if (others === 0) {
-    try {
-      await deleteFile(doc.s3Key)
-    } catch (err) {
-      console.error('Drive delete failed for', doc.s3Key, err)
-    }
+  // Give up this row's reference. The bytes go only when the last one does, so
+  // deleting your copy of a mass-pushed document no longer affects anyone else.
+  if (doc.blobId) {
+    await storage.release(doc.blobId)
   }
 
   await createAuditLog({
@@ -339,7 +345,7 @@ export async function deleteDocument(id: string): Promise<{ success: boolean; er
       scope: doc.scope,
       category: doc.category,
       employeeId: doc.employeeId,
-      sharedRowsRemaining: others,
+      blobId: doc.blobId,
     },
   })
 

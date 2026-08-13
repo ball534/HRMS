@@ -1,62 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifySession } from '@/lib/dal'
-import { google } from 'googleapis'
+import { verifySessionApi, withApiAuth } from '@/lib/dal'
+import { storage } from '@/lib/storage'
+import { resolveFileAccess } from '@/lib/fileAccess'
+import { createAuditLog } from '@/lib/audit'
 
-const SCOPES = ['https://www.googleapis.com/auth/drive']
-
-function getAuth() {
-  return new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: (process.env.GOOGLE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-    },
-    scopes: SCOPES,
-    clientOptions: {
-      subject: process.env.GOOGLE_IMPERSONATE_EMAIL || 'jin@tictag.io',
-    },
-  })
+/**
+ * Serve a stored file.
+ *
+ * Two things changed here. The bytes now come from Postgres rather than Google
+ * Drive, and — more importantly — the route actually checks whether the caller
+ * is allowed to see this particular file. It previously required only a session
+ * and then streamed any Drive id handed to it, which made every payslip, medical
+ * certificate and signed letter in the company readable by anyone who could
+ * guess or observe an id.
+ *
+ * The parameter is still called `fileId` so existing links keep their shape; it
+ * now carries a `FileBlob` id. Access rules live in src/lib/fileAccess.ts.
+ */
+export async function GET(req: NextRequest, ctx: { params: Promise<{ fileId: string }> }) {
+  return withApiAuth(() => handler(req, ctx))
 }
 
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ fileId: string }> }
-) {
-  // Require authenticated user
-  await verifySession()
+async function handler(_req: NextRequest, ctx: { params: Promise<{ fileId: string }> }) {
+  const session = await verifySessionApi()
+  const { fileId: blobId } = await ctx.params
 
-  const { fileId } = await params
+  const decision = await resolveFileAccess(blobId, session)
 
-  try {
-    const drive = google.drive({ version: 'v3', auth: getAuth() })
-
-    // Get file metadata for content type
-    const meta = await drive.files.get({
-      fileId,
-      fields: 'mimeType, name',
-      supportsAllDrives: true,
-    })
-
-    // Download file content
-    const res = await drive.files.get(
-      { fileId, alt: 'media', supportsAllDrives: true },
-      { responseType: 'arraybuffer' }
-    )
-
-    const buffer = Buffer.from(res.data as ArrayBuffer)
-
-    // Sanitize filename for Content-Disposition header (must be ASCII-safe)
-    const rawName = meta.data.name ?? 'file'
-    const safeName = rawName.replace(/[^\x20-\x7E]/g, '_')
-
-    return new NextResponse(buffer, {
-      headers: {
-        'Content-Type': meta.data.mimeType ?? 'application/octet-stream',
-        'Content-Disposition': `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`,
-        'Cache-Control': 'private, max-age=3600',
-      },
-    })
-  } catch (err) {
-    console.error(`File proxy error for fileId=${fileId}:`, err)
+  if (!decision.allowed) {
+    // Deliberately 404 for both cases: telling an unauthorized caller that a
+    // file exists but isn't theirs is itself a disclosure.
     return NextResponse.json({ error: 'File not found' }, { status: 404 })
   }
+
+  const file = await storage.get(blobId)
+  if (!file) {
+    return NextResponse.json({ error: 'File not found' }, { status: 404 })
+  }
+
+  // Who opened this payslip, and when. Previously unanswerable.
+  await createAuditLog({
+    userId: session.userId,
+    action: 'DOCUMENT_VIEWED',
+    entityType: 'DOCUMENT',
+    entityId: decision.recordId,
+    details: {
+      blobId,
+      kind: decision.kind,
+      category: decision.category ?? null,
+      subjectUserId: decision.subjectUserId,
+      fileName: decision.fileName,
+    },
+  })
+
+  // Content-Disposition must be ASCII-safe; `filename*` carries the real name.
+  const safeName = decision.fileName.replace(/[^\x20-\x7E]/g, '_')
+
+  return new NextResponse(new Uint8Array(file.data), {
+    headers: {
+      'Content-Type': file.mimeType,
+      'Content-Length': String(file.fileSize),
+      'Content-Disposition': `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(decision.fileName)}`,
+      // Private: this response is authorized per-user and must never land in a
+      // shared cache.
+      'Cache-Control': 'private, no-store',
+    },
+  })
 }

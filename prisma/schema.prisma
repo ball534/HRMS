@@ -99,6 +99,37 @@ enum AuditAction {
   LETTER_REMINDER_SENT
   CONFIRMATION_DATE_SET
   EMPLOYEE_FOLDER_ARCHIVED
+
+  // --- Offboarding (see src/actions/offboarding.ts) ---
+  USER_OFFBOARDED
+  APPROVALS_REASSIGNED
+  DIRECT_REPORTS_REASSIGNED
+  SESSION_REVOKED
+
+  // --- Org configuration ---
+  SETTING_UPDATED
+  STATUTORY_RULES_CREATED
+  STATUTORY_RULES_VERIFIED
+
+  // --- Terminal-state reversals (see src/lib/reversal.ts). Every one of
+  //     these carries a mandatory `reason` in `details` and is surfaced on
+  //     the record's own timeline — a reversal is never invisible. ---
+  LEAVE_REVERSED
+  EXPENSE_REVERSED
+  TIME_ENTRY_REVERSED
+  REVIEW_CYCLE_REVERSED
+  PERFORMANCE_REVIEW_REVERSED
+  REWARD_CYCLE_REVERSED
+  REWARD_ALLOCATION_REVERSED
+  EMPLOYMENT_LETTER_REVERSED
+  LEARNING_LOCKOUT_REVERSED
+
+  // --- Data egress. Anything that pulls company-wide personal data or
+  //     pay figures out of the app logs one of these. ---
+  PAYROLL_EXPORTED
+  EXPENSE_EXPORTED
+  RATINGS_EXPORTED
+  DOCUMENT_VIEWED
 }
 
 enum DocumentScope {
@@ -129,6 +160,10 @@ enum AuditEntityType {
   WORK_PASS
   BLACKOUT
   EMPLOYMENT_LETTER
+  LEARNING
+  PAYROLL
+  SETTING
+  STATUTORY_RULES
 }
 
 enum HalfDayOption {
@@ -358,6 +393,8 @@ model User {
   moduleLessonsCreated    LearningModuleLesson[] @relation("ModuleLessonCreator")
 
   careerEvents           CareerEvent[]
+  notifications          Notification[]
+  letterTemplateUploads  LetterTemplate[] @relation("LetterTemplateUploads")
 }
 
 model PasswordResetToken {
@@ -440,7 +477,10 @@ model LeaveRequest {
   halfDay         HalfDayOption @default(NONE)
   daysCount       Float
   reason          String?
+  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
   attachmentKey   String?
+  attachmentBlobId String?
+  attachmentBlob  FileBlob?     @relation(fields: [attachmentBlobId], references: [id])
   attachmentName  String?
   status          LeaveStatus   @default(PENDING)
   approverId      String?
@@ -488,7 +528,10 @@ model ExpenseReceipt {
   id           String   @id @default(uuid())
   expenseId    String
   expense      Expense  @relation(fields: [expenseId], references: [id])
-  s3Key        String
+  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
+  s3Key        String?
+  blobId       String?
+  blob         FileBlob? @relation(fields: [blobId], references: [id])
   fileName     String
   fileSize     Int
   mimeType     String
@@ -522,7 +565,11 @@ model Document {
   category     DocumentCategory  @default(OTHER)
   employeeId   String?
   employee     User?             @relation("EmployeeDocuments", fields: [employeeId], references: [id])
-  s3Key        String
+  /** Legacy Google Drive file id. Retained for historical rows only — never written. */
+  s3Key        String?
+  /** The stored file. Null only on legacy rows that predate Postgres storage. */
+  blobId       String?
+  blob         FileBlob?         @relation(fields: [blobId], references: [id])
   fileName     String
   fileSize     Int
   mimeType     String
@@ -797,7 +844,10 @@ model EmploymentLetter {
   rejectedAt         DateTime?
   rejectionReason    String?
 
-  // Generated PDF in Google Drive
+  // The generated PDF. `blobId` is the live pointer; the drive* columns are
+  // legacy and are no longer written.
+  blobId             String?
+  blob               FileBlob?    @relation(fields: [blobId], references: [id])
   driveFileId        String?
   driveWebViewLink   String?
 
@@ -959,4 +1009,203 @@ model CareerEvent {
   createdAt     DateTime        @default(now())
 
   @@index([userId, effectiveDate])
+}
+
+// ============================================================
+// Notifications — the in-app inbox. Every lifecycle event that a human
+// needs to know about writes a row here through `notify()`
+// (src/lib/notify.ts); email is a secondary channel off the same call.
+// Before this existed, everything in the app was discovered by chance
+// login.
+//
+// `emailedAt` / `emailError` record what actually happened on the email
+// side, so "the employee was never told" is an answerable question
+// rather than a guess.
+// ============================================================
+
+enum NotificationType {
+  // Leave
+  LEAVE_SUBMITTED
+  LEAVE_APPROVED
+  LEAVE_REJECTED
+  LEAVE_CANCELLED
+  // Time & attendance
+  TIMESHEET_SUBMITTED
+  TIMESHEET_APPROVED
+  TIMESHEET_REJECTED
+  // Expenses
+  EXPENSE_SUBMITTED
+  EXPENSE_APPROVED
+  EXPENSE_REJECTED
+  EXPENSE_REIMBURSED
+  // Performance
+  PERFORMANCE_GOALS_SET
+  PERFORMANCE_REVIEW_SUBMITTED
+  PERFORMANCE_ACK_REQUIRED
+  PERFORMANCE_DEADLINE
+  // Rewards
+  REWARD_APPROVED
+  REWARD_PAID
+  // Learning
+  LEARNING_LOCKED_OUT
+  LEARNING_UNLOCKED
+  LEARNING_DUE
+  // Work passes / letters / probation
+  WORK_PASS_EXPIRING
+  WORK_PASS_EXPIRED
+  LETTER_READY_FOR_ACTION
+  LETTER_SENT
+  PROBATION_DUE
+  // Cross-cutting
+  APPROVAL_REASSIGNED
+  STATE_REVERSED
+  GENERAL
+}
+
+model Notification {
+  id         String           @id @default(uuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       NotificationType
+  title      String
+  body       String
+  linkUrl    String?          // in-app deep link to the record it concerns
+  readAt     DateTime?
+  emailedAt  DateTime?        // null = email not sent (disabled, failed, or no address)
+  emailError String?
+  createdAt  DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+// ============================================================
+// Org settings — operational knobs that used to be hardcoded constants
+// scattered through the code (carry-forward cap, LMS attempt limit,
+// session length, fallback approver). Key/value so adding a knob needs
+// no migration; read through the typed accessors in src/lib/settings.ts
+// rather than touching this table directly.
+//
+// This is "what we decided". Statutory rules — "what the law says" —
+// live in StatutoryRuleSet below and are reviewed by different people.
+// ============================================================
+
+model OrgSetting {
+  key       String   @id
+  value     Json
+  updatedBy String? // User.id of the last editor; null for seeded defaults
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// ============================================================
+// Statutory rulebook — per-country employment rules (annual leave,
+// sick leave banding, overtime multipliers and caps), versioned by
+// effective date so a rule change never retroactively rewrites a
+// payroll figure or leave entitlement that was already calculated.
+//
+// `resolveRules(country, asOf)` in src/lib/statutory.ts picks the
+// latest set whose effectiveFrom <= asOf.
+//
+// IMPORTANT: `verifiedBy` is null until a qualified employment-law
+// adviser has signed the values off. While it is null the app shows an
+// "unverified" banner on every screen that depends on these numbers.
+// The seeded values carry over what the code did before and are NOT
+// legal advice.
+// ============================================================
+
+// ============================================================
+// File storage
+//
+// Files used to live in Google Drive, with the Drive file id stored in
+// `s3Key` / `driveFileId` columns. Storage is now Postgres: the bytes live
+// here and every record that owns a file references a blob by id.
+//
+// Why a separate table rather than a `Bytes` column on Document,
+// ExpenseReceipt and EmploymentLetter:
+//
+//   - `sha256` gives content addressing, so the same file uploaded twice is
+//     stored once. That is what makes a mass-push document safe — previously
+//     N employees shared one physical Drive file and one of them deleting
+//     "their" copy could bin the shared original once the row count hit zero.
+//   - `refCount` makes deletion safe: dropping a reference decrements, and the
+//     bytes go only when nothing points at them.
+//   - Keeping megabytes out of the owning tables means an ordinary
+//     `findMany` on Document never risks dragging file contents along with it.
+//
+// Access to these bytes is never direct — everything goes through
+// /api/files/[blobId], which resolves what the blob belongs to and checks
+// the caller may see it. See src/lib/fileAccess.ts.
+// ============================================================
+
+model FileBlob {
+  id        String   @id @default(uuid())
+  /** SHA-256 of `data`, hex. Content address — makes identical uploads share a row. */
+  sha256    String   @unique
+  data      Bytes
+  mimeType  String
+  fileSize  Int
+  /** Number of records pointing at this blob. Bytes are deleted when it hits 0. */
+  refCount  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  documents        Document[]
+  expenseReceipts  ExpenseReceipt[]
+  employmentLetters EmploymentLetter[]
+  leaveAttachments LeaveRequest[]
+  letterTemplates  LetterTemplate[]
+
+  @@index([refCount])
+}
+
+// ============================================================
+// Letter templates
+//
+// Letters were generated by copying a Google Doc template, replacing
+// {{placeholders}} via the Docs API, and exporting to PDF. With Google
+// removed, a template is now a fillable PDF: HR uploads one per letter type
+// and the app fills its AcroForm text fields with pdf-lib, then flattens the
+// result so the output is not editable.
+//
+// `fieldNames` is what was actually found in the uploaded PDF, so the admin
+// screen can show HR which merge fields their template will receive and
+// which of the available ones it is not using.
+// ============================================================
+
+model LetterTemplate {
+  id           String     @id @default(uuid())
+  /** One active template per letter type. */
+  type         LetterType @unique
+  blobId       String
+  blob         FileBlob   @relation(fields: [blobId], references: [id])
+  fileName     String
+  /** AcroForm text field names detected in the PDF on upload. */
+  fieldNames   String[]
+  /**
+   * True for the built-in template generated by
+   * `npm run letters:make-placeholder-templates`. It is deliberately plain and
+   * exists so the letters flow works before HR has supplied real stationery —
+   * the admin screen flags it as a placeholder.
+   */
+  isPlaceholder Boolean   @default(false)
+  uploadedById String?
+  uploadedBy   User?      @relation("LetterTemplateUploads", fields: [uploadedById], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model StatutoryRuleSet {
+  id            String    @id @default(uuid())
+  country       Country
+  effectiveFrom DateTime
+  rules         Json
+  note          String? // what changed and why, for the audit trail
+  createdBy     String? // User.id; null for the seeded baseline
+  verifiedBy    String? // User.id of the person recording adviser sign-off
+  verifiedAt    DateTime?
+  verifiedNote  String? // e.g. "Confirmed by <firm>, ref 1234"
+  createdAt     DateTime  @default(now())
+
+  @@unique([country, effectiveFrom])
+  @@index([country, effectiveFrom])
 }

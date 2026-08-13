@@ -1,6 +1,8 @@
 import { notFound } from 'next/navigation'
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { db } from '@/lib/db'
+import { OffboardDialog } from '@/components/people/OffboardDialog'
 import { getLeaveAuditLogs } from '@/lib/audit'
 import { EmployeeProfile } from '@/components/people/EmployeeProfile'
 import { WorkPassManager } from '@/components/people/WorkPassManager'
@@ -12,7 +14,12 @@ type Props = {
 export default async function PersonPage({ params }: Props) {
   const { id } = await params
   const session = await verifySession()
-  const isAdmin = session.role === 'ADMIN'
+  // Capability-driven rather than `role === 'ADMIN'`: the HR team now holds
+  // people.write and people.read.identity, so the HR side of this profile
+  // (identity records, leave, work passes) is visible to them without sharing
+  // the admin login.
+  const isAdmin = can(session.role, 'people.write')
+  const canOffboard = can(session.role, 'people.offboard')
   const isSelf = session.userId === id
   const currentYear = new Date().getFullYear()
 
@@ -169,6 +176,11 @@ export default async function PersonPage({ params }: Props) {
       workPassSlot={
         isAdmin ? (
           <WorkPassManager userId={id} passes={serializedWorkPasses} employee={employeeForPass} />
+        ) : undefined
+      }
+      offboardSlot={
+        canOffboard && !isSelf && user.status === 'ACTIVE' ? (
+          <OffboardDialog userId={id} employeeName={`${user.firstName} ${user.lastName}`} />
         ) : undefined
       }
     />

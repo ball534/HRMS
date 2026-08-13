@@ -2,10 +2,14 @@
 
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { notify } from '@/lib/notify'
+import { getSetting } from '@/lib/settings'
+import { assertNotSelf, SelfApprovalError } from '@/lib/approvers'
 import { createAuditLog } from '@/lib/audit'
 import { getExpenseApprover } from '@/lib/expenses'
-import { getDownloadUrl, moveFile, getExpenseFolderPath } from '@/lib/google-drive'
+import { storage } from '@/lib/storage'
 
 // ============================================================
 // Types
@@ -118,10 +122,14 @@ async function saveExpenseDraft(
 
     // Find receipts to remove (those not in the new list)
     const newKeys = new Set(receipts.map(r => r.key))
-    const toDelete = existing.receipts.filter(r => !newKeys.has(r.s3Key)).map(r => r.id)
+    const toDelete = existing.receipts.filter(r => !newKeys.has(r.blobId ?? '')).map(r => r.id)
+    const blobsToRelease = existing.receipts
+      .filter(r => !newKeys.has(r.blobId ?? ''))
+      .map(r => r.blobId)
+      .filter((b): b is string => !!b)
 
     // Find receipts to add (those not already in DB)
-    const existingKeys = new Set(existing.receipts.map(r => r.s3Key))
+    const existingKeys = new Set(existing.receipts.map(r => r.blobId))
     const toAdd = receipts.filter(r => !existingKeys.has(r.key))
 
     await db.$transaction([
@@ -144,7 +152,7 @@ async function saveExpenseDraft(
             db.expenseReceipt.createMany({
               data: toAdd.map(r => ({
                 expenseId: existingExpenseId,
-                s3Key: r.key,
+                blobId: r.key,
                 fileName: r.fileName,
                 fileSize: r.fileSize,
                 mimeType: r.mimeType,
@@ -154,6 +162,12 @@ async function saveExpenseDraft(
           ]
         : []),
     ])
+
+    // Removed receipts give up their blob reference; the bytes go when the last
+    // reference does.
+    for (const blobId of blobsToRelease) {
+      await storage.release(blobId)
+    }
 
     return { success: true, expenseId: existingExpenseId }
   }
@@ -171,7 +185,7 @@ async function saveExpenseDraft(
       status: 'DRAFT',
       receipts: {
         create: receipts.map(r => ({
-          s3Key: r.key,
+          blobId: r.key,
           fileName: r.fileName,
           fileSize: r.fileSize,
           mimeType: r.mimeType,
@@ -251,6 +265,18 @@ async function submitExpense(
     details: { approverId },
   })
 
+  const submitter = await db.user.findUnique({
+    where: { id: session.userId },
+    select: { firstName: true, lastName: true },
+  })
+  await notify({
+    userId: approverId,
+    type: 'EXPENSE_SUBMITTED',
+    title: `Expense claim from ${submitter?.firstName} ${submitter?.lastName}`,
+    body: `${expense.currency} ${Number(expense.amount).toFixed(2)} — ${expense.merchant}. Waiting for your approval.`,
+    linkUrl: '/expenses/approvals',
+  })
+
   return { success: true, expenseId: targetExpenseId }
 }
 
@@ -273,8 +299,17 @@ export async function approveExpense(
     where: { id: expenseId },
   })
 
-  if (session.userId !== expense.approverId && session.role !== 'ADMIN') {
+  if (session.userId !== expense.approverId && !can(session.role, 'expense.admin')) {
     return { error: 'You are not authorised to approve this expense' }
+  }
+
+  // An admin could previously approve *and* reimburse their own claim end to
+  // end, with no second pair of eyes anywhere in the chain.
+  try {
+    await assertNotSelf(session.userId, expense.userId, 'expense claim')
+  } catch (err) {
+    if (err instanceof SelfApprovalError) return { error: err.message }
+    throw err
   }
 
   if (expense.status !== 'FOR_APPROVAL') {
@@ -309,19 +344,18 @@ export async function approveExpense(
     details: { comment },
   })
 
-  // Move receipts from Pending Approval → Approved/YYYY-MM (by approval date)
-  const receipts = await db.expenseReceipt.findMany({
-    where: { expenseId },
-    select: { s3Key: true },
+  await notify({
+    userId: expense.userId,
+    type: 'EXPENSE_APPROVED',
+    title: 'Your expense claim was approved',
+    body: `${expense.currency} ${Number(expense.amount).toFixed(2)} — ${expense.merchant}${comment ? ` — "${comment}"` : ''}. Awaiting reimbursement.`,
+    linkUrl: '/expenses',
   })
-  const approvalFolder = getExpenseFolderPath('APPROVED', new Date())
-  for (const receipt of receipts) {
-    try {
-      await moveFile(receipt.s3Key, approvalFolder)
-    } catch {
-      // Non-critical: file may have been uploaded before Drive migration
-    }
-  }
+
+  // Receipts used to be physically moved between Drive folders as the claim
+  // progressed (Pending Approval → Approved → Reimbursed), which kept a second,
+  // divergent copy of the claim's status. The claim's own `status` column is now
+  // the only place status lives, so there is nothing to move.
 
   return { success: true }
 }
@@ -345,8 +379,15 @@ export async function rejectExpense(
     where: { id: expenseId },
   })
 
-  if (session.userId !== expense.approverId && session.role !== 'ADMIN') {
+  if (session.userId !== expense.approverId && !can(session.role, 'expense.admin')) {
     return { error: 'You are not authorised to reject this expense' }
+  }
+
+  try {
+    await assertNotSelf(session.userId, expense.userId, 'expense claim')
+  } catch (err) {
+    if (err instanceof SelfApprovalError) return { error: err.message }
+    throw err
   }
 
   if (expense.status !== 'FOR_APPROVAL') {
@@ -381,6 +422,14 @@ export async function rejectExpense(
     details: { comment },
   })
 
+  await notify({
+    userId: expense.userId,
+    type: 'EXPENSE_REJECTED',
+    title: 'Your expense claim was declined',
+    body: `${expense.currency} ${Number(expense.amount).toFixed(2)} — ${expense.merchant}${comment ? ` — reason: "${comment}"` : ''}`,
+    linkUrl: '/expenses',
+  })
+
   return { success: true }
 }
 
@@ -392,7 +441,7 @@ export async function markReimbursed(
   _state: ExpenseActionState,
   formData: FormData
 ): Promise<ExpenseActionState> {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('expense.reimburse')
 
   const expenseId = formData.get('expenseId') as string
   if (!expenseId) return { error: 'Expense ID is required' }
@@ -403,6 +452,14 @@ export async function markReimbursed(
 
   if (expense.status !== 'APPROVED') {
     return { error: `Cannot reimburse a ${expense.status.toLowerCase()} expense` }
+  }
+
+  // Releasing money to yourself needs someone else to press the button.
+  try {
+    await assertNotSelf(session.userId, expense.userId, 'expense claim')
+  } catch (err) {
+    if (err instanceof SelfApprovalError) return { error: err.message }
+    throw err
   }
 
   await db.expense.update({
@@ -422,19 +479,15 @@ export async function markReimbursed(
     details: {},
   })
 
-  // Move receipts from Approved → Reimbursed/YYYY-MM (by reimbursement date)
-  const receipts = await db.expenseReceipt.findMany({
-    where: { expenseId },
-    select: { s3Key: true },
+  await notify({
+    userId: expense.userId,
+    type: 'EXPENSE_REIMBURSED',
+    title: 'Your expense claim was reimbursed',
+    body: `${expense.currency} ${Number(expense.amount).toFixed(2)} — ${expense.merchant}`,
+    linkUrl: '/expenses',
   })
-  const reimbursedFolder = getExpenseFolderPath('REIMBURSED', new Date())
-  for (const receipt of receipts) {
-    try {
-      await moveFile(receipt.s3Key, reimbursedFolder)
-    } catch {
-      // Non-critical: file may have been uploaded before Drive migration
-    }
-  }
+
+  // No folder move needed — see the note in approveExpense.
 
   return { success: true }
 }
@@ -444,16 +497,22 @@ export async function markReimbursed(
 // ============================================================
 
 export async function bulkReimburse(expenseIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
-  const session = await requireRole(['ADMIN'])
+  const session = await requireCapability('expense.reimburse')
 
   if (!expenseIds || expenseIds.length === 0) {
     return { success: false, count: 0, error: 'No expenses selected' }
   }
 
-  // Verify all are APPROVED
+  // Verify all are APPROVED. Bulk reimburse must not be a route around the
+  // self-approval rule, so the caller's own claims are excluded.
+  const blockSelf = await getSetting('approvals.blockSelfApproval')
   const expenses = await db.expense.findMany({
-    where: { id: { in: expenseIds }, status: 'APPROVED' },
-    include: { receipts: { select: { s3Key: true } } },
+    where: {
+      id: { in: expenseIds },
+      status: 'APPROVED',
+      ...(blockSelf ? { userId: { not: session.userId } } : {}),
+    },
+    include: { receipts: { select: { blobId: true } } },
   })
 
   if (expenses.length === 0) {
@@ -482,15 +541,13 @@ export async function bulkReimburse(expenseIds: string[]): Promise<{ success: bo
       details: { bulk: true },
     })
 
-    // Move receipts to Reimbursed folder
-    const reimbursedFolder = getExpenseFolderPath('REIMBURSED', now)
-    for (const receipt of expense.receipts) {
-      try {
-        await moveFile(receipt.s3Key, reimbursedFolder)
-      } catch {
-        // Non-critical
-      }
-    }
+    await notify({
+      userId: expense.userId,
+      type: 'EXPENSE_REIMBURSED',
+      title: 'Your expense claim was reimbursed',
+      body: `${expense.currency} ${Number(expense.amount).toFixed(2)} — ${expense.merchant}`,
+      linkUrl: '/expenses',
+    })
   }
 
   return { success: true, count: expenses.length }
@@ -585,13 +642,12 @@ export async function getExpenseDetail(expenseId: string) {
     return null
   }
 
-  // Generate presigned download URLs for each receipt
-  const receiptsWithUrls = await Promise.all(
-    expense.receipts.map(async receipt => ({
-      ...receipt,
-      downloadUrl: await getDownloadUrl(receipt.s3Key),
-    }))
-  )
+  // The blob route does its own authorization and audit logging when hit, so
+  // building a link here costs nothing and grants nothing.
+  const receiptsWithUrls = expense.receipts.map(receipt => ({
+    ...receipt,
+    downloadUrl: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
+  }))
 
   return {
     ...expense,
@@ -682,7 +738,7 @@ export async function getApprovalExpenses(filters?: ApprovalExpenseFilters) {
     where,
     include: {
       user: { select: { firstName: true, lastName: true } },
-      receipts: { select: { id: true, s3Key: true, fileName: true, mimeType: true } },
+      receipts: { select: { id: true, blobId: true, fileName: true, mimeType: true } },
       approvals: {
         include: {
           approver: { select: { firstName: true, lastName: true } },
@@ -703,7 +759,7 @@ export async function getApprovalExpenses(filters?: ApprovalExpenseFilters) {
       receipts: await Promise.all(
         expense.receipts.map(async receipt => ({
           ...receipt,
-          url: await getDownloadUrl(receipt.s3Key),
+          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
         }))
       ),
     }))
@@ -717,13 +773,13 @@ export async function getApprovalExpenses(filters?: ApprovalExpenseFilters) {
 // ============================================================
 
 export async function getReimbursableExpenses() {
-  await requireRole(['ADMIN'])
+  await requireCapability('expense.reimburse')
 
   const expenses = await db.expense.findMany({
     where: { status: 'APPROVED' },
     include: {
       user: { select: { firstName: true, lastName: true } },
-      receipts: { select: { id: true, s3Key: true, fileName: true, mimeType: true } },
+      receipts: { select: { id: true, blobId: true, fileName: true, mimeType: true } },
       approvals: {
         include: {
           approver: { select: { firstName: true, lastName: true } },
@@ -743,7 +799,7 @@ export async function getReimbursableExpenses() {
       receipts: await Promise.all(
         expense.receipts.map(async receipt => ({
           ...receipt,
-          url: await getDownloadUrl(receipt.s3Key),
+          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
         }))
       ),
     }))
@@ -769,7 +825,7 @@ export async function getPendingExpenseApprovals() {
     where,
     include: {
       user: { select: { firstName: true, lastName: true } },
-      receipts: { select: { id: true, s3Key: true, fileName: true, mimeType: true } },
+      receipts: { select: { id: true, blobId: true, fileName: true, mimeType: true } },
       approvals: {
         include: {
           approver: { select: { firstName: true, lastName: true } },
@@ -789,7 +845,7 @@ export async function getPendingExpenseApprovals() {
       receipts: await Promise.all(
         expense.receipts.map(async receipt => ({
           ...receipt,
-          url: await getDownloadUrl(receipt.s3Key),
+          url: receipt.blobId ? `/api/files/${receipt.blobId}` : '',
         }))
       ),
     }))
@@ -804,25 +860,19 @@ export async function getPendingExpenseApprovals() {
 
 export async function deleteExpense(expenseId: string): Promise<ExpenseActionState> {
   try {
-    const session = await requireRole(['ADMIN'])
+    const session = await requireCapability('expense.delete')
 
     const expense = await db.expense.findUniqueOrThrow({
       where: { id: expenseId },
       include: {
-        receipts: { select: { s3Key: true } },
+        receipts: { select: { blobId: true } },
         user: { select: { firstName: true, lastName: true } },
       },
     })
 
-    // Delete receipt files from Google Drive
-    const { deleteFile } = await import('@/lib/google-drive')
-    for (const receipt of expense.receipts) {
-      try {
-        await deleteFile(receipt.s3Key)
-      } catch (err) {
-        console.error(`Failed to delete file ${receipt.s3Key} from Google Drive:`, err)
-      }
-    }
+    const receiptBlobIds = expense.receipts
+      .map(r => r.blobId)
+      .filter((b): b is string => !!b)
 
     // Delete in correct order: approvals → receipts → expense
     await db.$transaction([
@@ -830,6 +880,13 @@ export async function deleteExpense(expenseId: string): Promise<ExpenseActionSta
       db.expenseReceipt.deleteMany({ where: { expenseId } }),
       db.expense.delete({ where: { id: expenseId } }),
     ])
+
+    // Rows are gone, so release their blob references. Note this still destroys
+    // the receipts backing what may have been a *paid* claim — see the open item
+    // in oversight.md §6 about offering hard delete in every state.
+    for (const blobId of receiptBlobIds) {
+      await storage.release(blobId)
+    }
 
     await createAuditLog({
       userId: session.userId,

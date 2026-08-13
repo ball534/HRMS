@@ -7,14 +7,88 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
-import { archiveEmployeeFolder, getEmployeeFolderName, isDriveConfigured } from '@/lib/google-drive'
 import { generateEmploymentLetter, generateConfirmationLetter } from '@/actions/letters'
 
 /** Probation end = startDate + probationMonths (default 3). Null if no start date. */
 function computeProbationEnd(startDate: Date | null | undefined, months: number | null | undefined): Date | null {
   if (!startDate) return null
   return addMonths(startDate, months ?? 3)
+}
+
+/**
+ * Would making `managerId` the manager of `employeeId` create a reporting loop?
+ *
+ * Walks up from the proposed manager: if we reach the employee, the employee is
+ * already somewhere above that manager and the assignment would close a cycle.
+ * Returns a readable description of the loop, or null if the assignment is safe.
+ *
+ * Cycles were previously prevented only by a client-side dropdown filter, so
+ * A→B plus B→A was reachable through the normal UI. A cycle corrupts approval
+ * routing and makes d3's `stratify` throw when rendering the org chart.
+ */
+async function createsReportingCycle(employeeId: string, managerId: string): Promise<string | null> {
+  const chain: string[] = []
+  let cursor: string | null = managerId
+  const seen = new Set<string>()
+
+  while (cursor) {
+    if (seen.has(cursor)) break // pre-existing cycle elsewhere; don't spin
+    seen.add(cursor)
+
+    const node: { id: string; firstName: string; lastName: string; reportingManagerId: string | null } | null =
+      await db.user.findUnique({
+        where: { id: cursor },
+        select: { id: true, firstName: true, lastName: true, reportingManagerId: true },
+      })
+    if (!node) break
+
+    chain.push(`${node.firstName} ${node.lastName}`)
+    if (node.id === employeeId) return chain.join(' → ')
+
+    cursor = node.reportingManagerId
+  }
+
+  return null
+}
+
+/**
+ * Fields whose values must never be written into an audit log in cleartext.
+ * The change is recorded — that this person's NRIC was edited, by whom, when —
+ * but the numbers themselves are not duplicated into a second table.
+ */
+const REDACTED_AUDIT_FIELDS = new Set(['nric', 'passportNumber'])
+
+/**
+ * Per-field before/after diff for the audit log.
+ *
+ * `USER_UPDATED` used to record only `{ before: {status, role}, after: {...} }`,
+ * which meant "who changed this employee's NRIC, and when?" — exactly the kind
+ * of question an audit log exists to answer — was unanswerable.
+ */
+function diffUserFields(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, { from?: unknown; to?: unknown; changed?: true }> {
+  const changed: Record<string, { from?: unknown; to?: unknown; changed?: true }> = {}
+
+  for (const key of Object.keys(after)) {
+    const b = normaliseForDiff(before[key])
+    const a = normaliseForDiff(after[key])
+    if (b === a) continue
+
+    changed[key] = REDACTED_AUDIT_FIELDS.has(key) ? { changed: true } : { from: b, to: a }
+  }
+
+  return changed
+}
+
+/** Dates → ISO date, empty string → null, so cosmetic differences don't register. */
+function normaliseForDiff(v: unknown): unknown {
+  if (v === undefined || v === '') return null
+  if (v instanceof Date) return v.toISOString().slice(0, 10)
+  return v
 }
 
 const CreateUserSchema = z.object({
@@ -57,8 +131,8 @@ export async function createUser(
 ): Promise<CreateUserState> {
   const session = await verifySession()
 
-  if (session.role !== 'ADMIN') {
-    return { error: 'Permission denied: Admin access required' }
+  if (!can(session.role, 'people.write')) {
+    return { error: 'Permission denied: you cannot create employee records' }
   }
 
   const raw = {
@@ -212,8 +286,8 @@ export async function updateUser(
 ): Promise<UpdateUserState> {
   const session = await verifySession()
 
-  if (session.role !== 'ADMIN') {
-    return { error: 'Permission denied: Admin access required' }
+  if (!can(session.role, 'people.write')) {
+    return { error: 'Permission denied: you cannot edit employee records' }
   }
 
   const raw = {
@@ -266,12 +340,74 @@ export async function updateUser(
     select: {
       status: true, role: true, email: true, firstName: true, lastName: true,
       employeeNumber: true, folderArchivedAt: true, probationMonths: true, startDate: true,
-      position: true, department: true,
+      position: true, department: true, phone: true, dateOfBirth: true, nationality: true,
+      nric: true, passportNumber: true, passportExpiry: true, company: true,
+      employmentType: true, country: true, reportingManagerId: true,
     },
   })
 
   if (!before) {
     return { error: 'User not found' }
+  }
+
+  // ---- Guards on the sensitive fields -----------------------------------
+  //
+  // Role and status are the two fields that decide what someone can do and
+  // whether they can log in at all, so changing them is an ADMIN act even
+  // though HR may edit everything else on the record.
+  const changingRole = data.role !== before.role
+  const changingStatus = data.status !== before.status
+  if ((changingRole || changingStatus) && !can(session.role, 'people.write.role')) {
+    return {
+      error: changingRole
+        ? 'Only an administrator can change someone\'s role.'
+        : 'Only an administrator can change someone\'s status. Use the offboarding flow to terminate an employee.',
+    }
+  }
+
+  // Terminating must go through the offboarding flow, which reassigns reports,
+  // re-routes the approval queue, prorates leave and flags work passes. Setting
+  // the status straight to TERMINATED from this form would skip all of it and
+  // leave the same mess this release exists to clean up.
+  if (data.status === 'TERMINATED' && before.status !== 'TERMINATED') {
+    return {
+      error:
+        'Use the "Offboard employee" action to terminate someone — it reassigns their reports and approvals, prorates their leave and flags their work passes. Changing the status here would skip all of that.',
+    }
+  }
+
+  // Nothing used to stop the last ADMIN demoting or deactivating themselves —
+  // one click locked the whole Group out of every admin function with no
+  // in-app way back.
+  if (before.role === 'ADMIN' && (changingRole || data.status !== 'ACTIVE')) {
+    const otherActiveAdmins = await db.user.count({
+      where: { role: 'ADMIN', status: 'ACTIVE', id: { not: data.id } },
+    })
+    if (otherActiveAdmins === 0) {
+      return {
+        error:
+          'This is the only active administrator. Promote someone else to ADMIN first, or nobody will be able to administer the system.',
+      }
+    }
+  }
+
+  // Reporting-manager cycles (A reports to B, B reports to A) were only
+  // prevented by a client-side dropdown filter, and a cycle corrupts approval
+  // routing and makes the org chart unrenderable.
+  if (data.reportingManagerId && data.reportingManagerId !== before.reportingManagerId) {
+    if (data.reportingManagerId === data.id) {
+      return { errors: { reportingManagerId: ['Someone cannot report to themselves'] } }
+    }
+    const cycle = await createsReportingCycle(data.id, data.reportingManagerId)
+    if (cycle) {
+      return {
+        errors: {
+          reportingManagerId: [
+            `That would create a reporting loop (${cycle}). Pick a manager who is not below this employee.`,
+          ],
+        },
+      }
+    }
   }
 
   const startDate = data.startDate ? new Date(data.startDate) : null
@@ -323,8 +459,27 @@ export async function updateUser(
     entityType: 'USER',
     entityId: data.id,
     details: {
-      before: { status: before.status, role: before.role },
-      after: { status: data.status, role: data.role },
+      changed: diffUserFields(before as unknown as Record<string, unknown>, {
+        firstName: data.firstName,
+        lastName: data.lastName,
+        email: data.email,
+        phone: data.phone || null,
+        dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
+        nationality: data.nationality || null,
+        employeeNumber: data.employeeNumber || null,
+        nric: data.nric || null,
+        passportNumber: data.passportNumber || null,
+        passportExpiry: data.passportExpiry ? new Date(data.passportExpiry) : null,
+        company: data.company || null,
+        position: data.position || null,
+        department: data.department || null,
+        employmentType: data.employmentType,
+        country: data.country,
+        startDate,
+        reportingManagerId: data.reportingManagerId || null,
+        role: data.role,
+        status: data.status,
+      }),
     },
   })
 
@@ -373,26 +528,21 @@ export async function updateUser(
     await db.careerEvent.createMany({ data: journeyEvents })
   }
 
-  // Archive the Drive folder (best-effort) when the employee is rejected/terminated.
-  if (becomingArchived && isDriveConfigured()) {
-    try {
-      const folderName = getEmployeeFolderName({
-        firstName: data.firstName,
-        lastName: data.lastName,
-        employeeNumber: data.employeeNumber || before.employeeNumber,
-        id: data.id,
-      })
-      await archiveEmployeeFolder(folderName)
-      await createAuditLog({
-        userId: session.userId,
-        action: 'EMPLOYEE_FOLDER_ARCHIVED',
-        entityType: 'USER',
-        entityId: data.id,
-        details: { reason: data.status },
-      })
-    } catch (err) {
-      console.error('archiveEmployeeFolder error:', err)
-    }
+  // There is no folder to archive any more. Documents live in Postgres keyed by
+  // `employeeId`, so a leaver's records are already exactly where they were and
+  // are retained by default — which is what statutory record-keeping wants.
+  // `folderArchivedAt` and the EMPLOYEE_FOLDER_ARCHIVED audit action are legacy
+  // and no longer written. What is still open (oversight.md §10) is that the HR
+  // document browser only lists ACTIVE employees, so those retained records
+  // aren't reachable through the UI.
+  if (becomingArchived) {
+    await createAuditLog({
+      userId: session.userId,
+      action: 'USER_UPDATED',
+      entityType: 'USER',
+      entityId: data.id,
+      details: { documentsRetained: true, reason: data.status },
+    })
   }
 
   revalidatePath(`/people/${data.id}`)
@@ -409,7 +559,7 @@ export async function setConfirmationDate(
 ): Promise<{ success?: boolean; error?: string }> {
   try {
     const session = await verifySession()
-    if (session.role !== 'ADMIN' && session.role !== 'HR') {
+    if (!can(session.role, 'people.write')) {
       return { error: 'Permission denied' }
     }
 
@@ -465,7 +615,7 @@ export async function adminResetPassword(
 ): Promise<{ success: boolean; tempPassword?: string; error?: string }> {
   const session = await verifySession()
 
-  if (session.role !== 'ADMIN') {
+  if (!can(session.role, 'people.reset_password')) {
     return { success: false, error: 'Permission denied' }
   }
 

@@ -185,7 +185,7 @@ export function DocumentUploaderModal({
           scope: target.kind,
           category,
           employeeIds: target.kind === 'EMPLOYEE' ? target.employeeIds : undefined,
-          s3Key: key,
+          blobId: key,
           fileName,
           fileSize,
           mimeType,

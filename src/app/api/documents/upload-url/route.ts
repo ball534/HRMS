@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireRole, verifySession } from '@/lib/dal'
-import {
-  uploadFile,
-  getDocumentFolderPath,
-  getSharedDocumentFolderPath,
-} from '@/lib/google-drive'
-import { db } from '@/lib/db'
+import { verifySessionApi, withApiAuth } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { putChecked, FileTooLargeError } from '@/lib/storage'
+
+/**
+ * Document upload.
+ *
+ * Files land in Postgres via the storage layer rather than in a Google Drive
+ * folder. The route no longer needs to work out *where* to put the file — the
+ * Document row's scope, category and employeeId already say what it is, and the
+ * old Drive folder hierarchy was duplicating that information in a second,
+ * silently-divergent place.
+ *
+ * The route name is a leftover from an S3 presigned-URL design. It has never
+ * returned a URL; it receives the bytes and returns the stored blob's id.
+ */
 
 const ALLOWED_MIME = new Set([
   'application/pdf',
@@ -29,18 +38,25 @@ const VALID_CATEGORIES = new Set([
 ])
 
 export async function POST(req: NextRequest) {
-  const session = await verifySession()
+  return withApiAuth(() => handler(req))
+}
+
+async function handler(req: NextRequest) {
+  const session = await verifySessionApi()
 
   const formData = await req.formData()
   const file = formData.get('file') as File | null
   const scope = (formData.get('scope') as string | null) ?? 'EMPLOYEE'
   const category = (formData.get('category') as string | null) ?? 'OTHER'
   const employeeIdsRaw = formData.get('employeeIds') as string | null
+
   let employeeIds: string[] = []
   if (employeeIdsRaw) {
     try {
       const parsed = JSON.parse(employeeIdsRaw)
-      if (Array.isArray(parsed)) employeeIds = parsed.filter((x): x is string => typeof x === 'string')
+      if (Array.isArray(parsed)) {
+        employeeIds = parsed.filter((x): x is string => typeof x === 'string')
+      }
     } catch {
       return NextResponse.json({ error: 'Invalid employeeIds' }, { status: 400 })
     }
@@ -56,48 +72,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid category' }, { status: 400 })
   }
 
-  const isHR = session.role === 'ADMIN' || session.role === 'HR'
+  const isHR = can(session.role, 'documents.admin')
 
   // ---- Permission checks ----
   if (scope === 'COMPANY' && !isHR) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
   if (scope === 'EMPLOYEE') {
-    if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+    if (employeeIds.length === 0) {
       return NextResponse.json({ error: 'employeeIds required for EMPLOYEE scope' }, { status: 400 })
     }
     if (!isHR) {
-      // Employees can only upload to their own folder, one target only.
+      // Employees may only upload against their own record, one target only.
       if (employeeIds.length !== 1 || employeeIds[0] !== session.userId) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }
   }
 
-  // ---- Choose Drive folder ----
-  let folderPath: string[]
-  if (scope === 'COMPANY') {
-    folderPath = getDocumentFolderPath('COMPANY', undefined, category)
-  } else if (employeeIds.length > 1) {
-    folderPath = getSharedDocumentFolderPath(category)
-  } else {
-    const employee = await db.user.findUnique({
-      where: { id: employeeIds[0] },
-      select: { firstName: true, lastName: true },
-    })
-    const employeeName = employee
-      ? `${employee.firstName} ${employee.lastName}`
-      : undefined
-    folderPath = getDocumentFolderPath('EMPLOYEE', employeeName, category)
-  }
-
   const buffer = Buffer.from(await file.arrayBuffer())
-  const { fileId } = await uploadFile(buffer, file.name, file.type, folderPath)
 
-  return NextResponse.json({
-    key: fileId,
-    fileName: file.name,
-    fileSize: file.size,
-    mimeType: file.type,
-  })
+  try {
+    const stored = await putChecked(buffer, file.type)
+    return NextResponse.json({
+      // `key` is kept as the response field name so existing clients keep
+      // working; it now carries a blob id rather than a Drive file id.
+      key: stored.blobId,
+      blobId: stored.blobId,
+      fileName: file.name,
+      fileSize: stored.fileSize,
+      mimeType: stored.mimeType,
+      deduped: stored.deduped,
+    })
+  } catch (err) {
+    if (err instanceof FileTooLargeError) {
+      return NextResponse.json({ error: err.message }, { status: 413 })
+    }
+    throw err
+  }
 }

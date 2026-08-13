@@ -30,7 +30,7 @@ export type SerializedApprovalExpense = {
   user: { firstName: string; lastName: string }
   approver: { firstName: string; lastName: string } | null
   reimbursedBy: { firstName: string; lastName: string } | null
-  receipts: Array<{ id: string; s3Key: string; url: string; fileName: string; mimeType: string }>
+  receipts: Array<{ id: string; blobId: string | null; url: string; fileName: string; mimeType: string }>
   approvals: Array<{
     id: string
     status: string
@@ -56,7 +56,7 @@ function serializeExpense(e: {
   user: { firstName: string; lastName: string }
   approver: { firstName: string; lastName: string } | null
   reimbursedBy: { firstName: string; lastName: string } | null
-  receipts: Array<{ id: string; s3Key: string; url: string; fileName: string; mimeType: string }>
+  receipts: Array<{ id: string; blobId: string | null; url: string; fileName: string; mimeType: string }>
   approvals: Array<{
     id: string
     status: string

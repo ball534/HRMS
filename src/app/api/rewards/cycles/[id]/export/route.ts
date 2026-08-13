@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapabilityApi, withApiAuth } from '@/lib/dal'
+import { createAuditLog } from '@/lib/audit'
 
 const BONUS_LABEL: Record<string, string> = {
   PERFORMANCE: 'Performance',
@@ -12,7 +13,11 @@ const BONUS_LABEL: Record<string, string> = {
 type Ctx = { params: Promise<{ id: string }> }
 
 export async function GET(_request: NextRequest, ctx: Ctx) {
-  await requireRole(['ADMIN'])
+  return withApiAuth(() => handler(ctx))
+}
+
+async function handler(ctx: Ctx) {
+  const session = await requireCapabilityApi('rewards.export')
   const { id } = await ctx.params
 
   const cycle = await db.rewardCycle.findUnique({
@@ -97,6 +102,19 @@ export async function GET(_request: NextRequest, ctx: Ctx) {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Summary')
 
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }) as Buffer
+
+  await createAuditLog({
+    userId: session.userId,
+    action: 'RATINGS_EXPORTED',
+    entityType: 'REWARD_CYCLE',
+    entityId: cycle.id,
+    details: {
+      kind: 'bonus_allocations',
+      cycleName: cycle.name,
+      cycleStatus: cycle.status,
+      allocationCount: cycle.allocations.length,
+    },
+  })
 
   const filename = `rewards-${cycle.name.replace(/[^a-z0-9-]+/gi, '_')}.xlsx`
   return new NextResponse(new Uint8Array(buf), {

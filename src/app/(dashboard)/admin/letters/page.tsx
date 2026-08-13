@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { getLettersToReview } from '@/actions/letters'
 import { cn } from '@/lib/utils'
 
@@ -23,7 +23,7 @@ function fmt(d: Date | null) {
 }
 
 export default async function LettersPage() {
-  await requireRole(['ADMIN'])
+  await requireCapability('letters.read')
   const letters = await getLettersToReview()
 
   return (

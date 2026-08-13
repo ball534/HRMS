@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapabilityApi, withApiAuth } from '@/lib/dal'
+import { createAuditLog } from '@/lib/audit'
 import { EXPENSE_CATEGORIES } from '@/lib/expense-constants'
 import type { ExpenseStatus } from '@/generated/prisma/client'
 
@@ -10,7 +11,15 @@ const categoryMap = Object.fromEntries(
 )
 
 export async function GET(request: NextRequest) {
-  await requireRole(['ADMIN'])
+  return withApiAuth(() => handler(request))
+}
+
+async function handler(request: NextRequest) {
+  const session = await requireCapabilityApi('expense.export')
+
+  // Receipt links point back into the app rather than at drive.google.com, so
+  // opening one from the spreadsheet goes through the authorization check.
+  const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || ''
 
   const params = request.nextUrl.searchParams
   const employee = params.get('employee')?.trim() || ''
@@ -50,7 +59,7 @@ export async function GET(request: NextRequest) {
     include: {
       user: { select: { firstName: true, lastName: true, email: true } },
       approver: { select: { firstName: true, lastName: true } },
-      receipts: { select: { s3Key: true, fileName: true } },
+      receipts: { select: { blobId: true, fileName: true } },
     },
     orderBy: [
       { user: { firstName: 'asc' } },
@@ -74,7 +83,9 @@ export async function GET(request: NextRequest) {
     Amount: parseFloat(e.amount.toString()),
     Status: e.status,
     'Approved By': e.approver ? `${e.approver.firstName} ${e.approver.lastName}` : '',
-    Receipts: e.receipts.map(r => `https://drive.google.com/file/d/${r.s3Key}/view`).join('\n'),
+    Receipts: e.receipts
+      .map(r => (r.blobId ? `${baseUrl}/api/files/${r.blobId}` : r.fileName))
+      .join('\n'),
   }))
 
   // ---------- Summary sheet (grouped by employee + currency) ----------
@@ -148,6 +159,21 @@ export async function GET(request: NextRequest) {
 
   // ---------- Generate buffer ----------
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+  await createAuditLog({
+    userId: session.userId,
+    action: 'EXPENSE_EXPORTED',
+    entityType: 'EXPENSE',
+    details: {
+      kind: 'filtered',
+      // The filters matter: with none set this is a full-company dump, which
+      // should look different in the audit log from a single-employee export.
+      filters: { employee, category, status, from, to },
+      claimCount: expenses.length,
+      includesEmails: true,
+      includesReceiptLinks: true,
+    },
+  })
 
   const today = new Date().toISOString().split('T')[0]
   const filename = `Expenses_Export_${today}.xlsx`

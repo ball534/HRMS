@@ -2,12 +2,21 @@
 
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
+import { notify } from '@/lib/notify'
+import {
+  assertNotSelf,
+  resolveApprover,
+  NoApproverError,
+  SelfApprovalError,
+  type ApproverResolution,
+} from '@/lib/approvers'
 import { calculateWorkingDays } from '@/lib/workingDays'
 import { getOrCreateBalance } from '@/actions/leaveBalance'
 import { computeAvailable } from '@/lib/leaveEntitlement'
-import { uploadFile, getDownloadUrl } from '@/lib/google-drive'
+import { putChecked, FileTooLargeError } from '@/lib/storage'
 import { findOverlappingBlackouts } from '@/actions/blackouts'
 
 // ============================================================
@@ -17,6 +26,19 @@ import { findOverlappingBlackouts } from '@/actions/blackouts'
 export type LeaveActionState = {
   success?: boolean
   error?: string
+}
+
+/** "12 Mar 2026" or "12–16 Mar 2026" — used in notification bodies. */
+function fmtRange(start: Date, end: Date): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }
+  const s = new Date(start).toLocaleDateString('en-GB', opts)
+  const e = new Date(end).toLocaleDateString('en-GB', opts)
+  return s === e ? s : `${s} – ${e}`
 }
 
 export type PreviewResult = {
@@ -99,8 +121,16 @@ export async function submitLeaveRequest(
       },
     })
 
-    if (!user.reportingManagerId) {
-      return { error: 'You do not have a reporting manager assigned. Please contact your administrator.' }
+    // Who will approve this. Previously an employee with no reporting manager
+    // was simply refused ("contact your administrator") and could not take any
+    // leave at all; now the request routes to the configured fallback approver,
+    // or to an ADMIN/HR user, and never to the requester themselves.
+    let approver: ApproverResolution
+    try {
+      approver = await resolveApprover(session.userId)
+    } catch (err) {
+      if (err instanceof NoApproverError) return { error: err.message }
+      throw err
     }
 
     // Fetch leave type
@@ -175,28 +205,24 @@ export async function submitLeaveRequest(
       }
     }
 
-    // Upload attachment to Google Drive if provided
-    let attachmentKey: string | undefined
+    // Store the attachment (typically a medical certificate) in Postgres.
+    let attachmentBlobId: string | undefined
     let attachmentName: string | undefined
 
     if (hasAttachment && attachment) {
       attachmentName = attachment.name
       const buffer = Buffer.from(await attachment.arrayBuffer())
 
-      const userForName = await db.user.findUnique({
-        where: { id: session.userId },
-        select: { firstName: true, lastName: true },
-      })
-      const employeeName = userForName ? `${userForName.firstName} ${userForName.lastName}` : 'Unknown'
-      const fileName = `${employeeName} - ${new Date().toISOString().slice(0, 10)} - ${attachment.name}`
-
-      const { fileId } = await uploadFile(
-        buffer,
-        fileName,
-        attachment.type || 'application/octet-stream',
-        ['Documents', employeeName, 'Leave Attachments'],
-      )
-      attachmentKey = fileId
+      try {
+        const stored = await putChecked(
+          buffer,
+          attachment.type || 'application/octet-stream',
+        )
+        attachmentBlobId = stored.blobId
+      } catch (err) {
+        if (err instanceof FileTooLargeError) return { error: err.message }
+        throw err
+      }
     }
 
     // Create request + reserve pending balance in transaction
@@ -224,10 +250,10 @@ export async function submitLeaveRequest(
           halfDay: halfDay as 'NONE' | 'AM' | 'PM',
           daysCount,
           reason,
-          attachmentKey,
+          attachmentBlobId,
           attachmentName,
           status: 'PENDING',
-          approverId: user.reportingManagerId,
+          approverId: approver.approverId,
         },
       }),
       ...balanceUpdate,
@@ -238,7 +264,28 @@ export async function submitLeaveRequest(
       action: 'LEAVE_SUBMITTED',
       entityType: 'LEAVE',
       entityId: request.id,
-      details: { leaveTypeId, startDate: startDate.toISOString(), endDate: endDate.toISOString(), daysCount },
+      details: {
+        leaveTypeId,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        daysCount,
+        approverId: approver.approverId,
+        approverSource: approver.source,
+      },
+    })
+
+    // Tell the approver there is something in their queue. Before this, a
+    // request sat unseen until the approver happened to log in and notice.
+    const requester = await db.user.findUnique({
+      where: { id: session.userId },
+      select: { firstName: true, lastName: true },
+    })
+    await notify({
+      userId: approver.approverId,
+      type: 'LEAVE_SUBMITTED',
+      title: `Leave request from ${requester?.firstName} ${requester?.lastName}`,
+      body: `${leaveType.name} · ${fmtRange(startDate, endDate)} · ${daysCount} day(s). Waiting for your approval.`,
+      linkUrl: '/approvals',
     })
 
     return { success: true }
@@ -270,8 +317,16 @@ export async function approveLeave(
     })
 
     // Auth check
-    if (session.userId !== request.approverId && session.role !== 'ADMIN' && session.role !== 'HR') {
+    if (session.userId !== request.approverId && !can(session.role, 'leave.approve')) {
       return { error: 'You are not authorised to approve this request.' }
+    }
+
+    // An ADMIN/HR user used to be able to approve their own leave outright.
+    try {
+      await assertNotSelf(session.userId, request.userId, 'leave request')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) return { error: err.message }
+      throw err
     }
 
     if (request.status !== 'PENDING') {
@@ -317,6 +372,14 @@ export async function approveLeave(
       details: { comment },
     })
 
+    await notify({
+      userId: request.userId,
+      type: 'LEAVE_APPROVED',
+      title: 'Your leave request was approved',
+      body: `${request.leaveType.name} · ${fmtRange(request.startDate, request.endDate)}${comment ? ` — "${comment}"` : ''}`,
+      linkUrl: `/leave/${requestId}`,
+    })
+
     return { success: true }
   } catch (err) {
     console.error('approveLeave error:', err)
@@ -346,8 +409,15 @@ export async function rejectLeave(
     })
 
     // Auth check
-    if (session.userId !== request.approverId && session.role !== 'ADMIN' && session.role !== 'HR') {
+    if (session.userId !== request.approverId && !can(session.role, 'leave.approve')) {
       return { error: 'You are not authorised to reject this request.' }
+    }
+
+    try {
+      await assertNotSelf(session.userId, request.userId, 'leave request')
+    } catch (err) {
+      if (err instanceof SelfApprovalError) return { error: err.message }
+      throw err
     }
 
     if (request.status !== 'PENDING') {
@@ -391,6 +461,14 @@ export async function rejectLeave(
       details: { comment },
     })
 
+    await notify({
+      userId: request.userId,
+      type: 'LEAVE_REJECTED',
+      title: 'Your leave request was declined',
+      body: `${request.leaveType.name} · ${fmtRange(request.startDate, request.endDate)}${comment ? ` — reason: "${comment}"` : ''}`,
+      linkUrl: `/leave/${requestId}`,
+    })
+
     return { success: true }
   } catch (err) {
     console.error('rejectLeave error:', err)
@@ -420,7 +498,7 @@ export async function cancelLeave(
     // Auth check
     const isOwnPendingRequest =
       session.userId === request.userId && request.status === 'PENDING'
-    const isAdminOrHR = session.role === 'ADMIN' || session.role === 'HR'
+    const isAdminOrHR = can(session.role, 'leave.admin')
 
     if (!isOwnPendingRequest && !isAdminOrHR) {
       return { error: 'You are not authorised to cancel this request.' }
@@ -476,6 +554,27 @@ export async function cancelLeave(
       details: { previousStatus: request.status },
     })
 
+    // Tell whoever now doesn't need to act on it — the approver if it was
+    // pending, or the employee if HR cancelled on their behalf.
+    if (request.status === 'PENDING' && request.approverId && request.approverId !== session.userId) {
+      await notify({
+        userId: request.approverId,
+        type: 'LEAVE_CANCELLED',
+        title: 'A leave request in your queue was cancelled',
+        body: `${request.leaveType.name} · ${fmtRange(request.startDate, request.endDate)} — no action needed.`,
+        linkUrl: '/approvals',
+      })
+    }
+    if (session.userId !== request.userId) {
+      await notify({
+        userId: request.userId,
+        type: 'LEAVE_CANCELLED',
+        title: 'Your leave request was cancelled',
+        body: `${request.leaveType.name} · ${fmtRange(request.startDate, request.endDate)} was cancelled by HR.`,
+        linkUrl: `/leave/${requestId}`,
+      })
+    }
+
     return { success: true }
   } catch (err) {
     console.error('cancelLeave error:', err)
@@ -489,7 +588,7 @@ export async function cancelLeave(
 
 export async function deleteLeave(requestId: string): Promise<LeaveActionState> {
   try {
-    const session = await requireRole(['ADMIN', 'HR'])
+    const session = await requireCapability('leave.delete')
 
     const request = await db.leaveRequest.findUniqueOrThrow({
       where: { id: requestId },
@@ -601,7 +700,7 @@ export async function getAttachmentUrl(requestId: string) {
     select: {
       userId: true,
       approverId: true,
-      attachmentKey: true,
+      attachmentBlobId: true,
       attachmentName: true,
     },
   })
@@ -617,10 +716,11 @@ export async function getAttachmentUrl(requestId: string) {
     return null
   }
 
-  if (!request.attachmentKey) return null
+  if (!request.attachmentBlobId) return null
 
-  const url = await getDownloadUrl(request.attachmentKey)
-  return { url, filename: request.attachmentName }
+  // The blob route re-checks authorization and logs the read, so handing back a
+  // link here is not itself a grant.
+  return { url: `/api/files/${request.attachmentBlobId}`, filename: request.attachmentName }
 }
 
 // ============================================================

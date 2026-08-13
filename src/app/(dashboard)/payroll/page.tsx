@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { requireRole } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { getMonthlyPayroll } from '@/actions/timeEntry'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { cn } from '@/lib/utils'
@@ -34,7 +34,7 @@ function fmt(n: number): string {
 }
 
 export default async function PayrollPage({ searchParams }: Props) {
-  await requireRole(['ADMIN'])
+  await requireCapability('payroll.read')
   const sp = await searchParams
   const { year, monthIndex } = parseMonth(sp.month)
   const rows = await getMonthlyPayroll(year, monthIndex)
@@ -46,14 +46,42 @@ export default async function PayrollPage({ searchParams }: Props) {
   const grandTotal = rows.reduce((sum, r) => sum + r.breakdown.totalPay, 0)
   const totalHours = rows.reduce((sum, r) => sum + r.breakdown.totalHours, 0)
 
+  /**
+   * Show the multiplier in a column header only when every employee on screen
+   * shares it. SG and MY have separate rule sets, so once their figures diverge
+   * a single hardcoded "1.5×" in the header would be wrong for half the rows.
+   */
+  function multiplierLabel(which: 'ot' | 'ph' | 'phOt'): string {
+    const key =
+      which === 'ot'
+        ? 'overtimeMultiplier'
+        : which === 'ph'
+          ? 'publicHolidayMultiplier'
+          : 'publicHolidayOvertimeMultiplier'
+    const distinct = Array.from(new Set(rows.map(r => r.overtimeRules[key])))
+    return distinct.length === 1 ? ` (${distinct[0]}×)` : ''
+  }
+
+  const unverifiedRules = rows.some(r => !r.rulesVerified)
+  const missingRates = rows
+    .filter(r => r.missingHourlyRate && r.entryCount > 0)
+    .map(r => `${r.user.firstName} ${r.user.lastName}`)
+  const assumedHours = rows
+    .filter(r => r.assumedDailyHours && r.entryCount > 0)
+    .map(r => `${r.user.firstName} ${r.user.lastName}`)
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Part-time Payroll</h1>
           <p className="text-muted-foreground">
-            Computed from approved time entries × hourly rate, with MY Employment Act 1955 multipliers
-            applied automatically (1.5× over 8h/day or 45h/wk, 2× on PH, 3× for PH overtime).
+            Computed from approved time entries × hourly rate, using each employee&apos;s own country
+            overtime rules from the{' '}
+            <Link href="/admin/statutory" className="underline">
+              statutory rulebook
+            </Link>
+            .
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -81,6 +109,39 @@ export default async function PayrollPage({ searchParams }: Props) {
         </div>
       </div>
 
+      {/* Data-quality and compliance warnings. These conditions used to be
+          entirely silent: a missing hourly rate exported as 0.00, and Singapore
+          employees were costed with Malaysian multipliers with no indication. */}
+      {(unverifiedRules || missingRates.length > 0 || assumedHours.length > 0) && (
+        <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+          {unverifiedRules && (
+            <p>
+              <strong>Statutory values are unverified.</strong> The overtime caps and multipliers
+              behind these figures have not been confirmed by a qualified employment-law adviser —
+              and the Singapore figures are currently the Malaysian ones. Treat these numbers as
+              provisional and see{' '}
+              <Link href="/admin/statutory" className="underline">
+                Statutory Rules
+              </Link>
+              .
+            </p>
+          )}
+          {missingRates.length > 0 && (
+            <p>
+              <strong>{missingRates.length} employee(s) have no hourly rate</strong> and are being
+              costed at zero: {missingRates.join(', ')}.
+            </p>
+          )}
+          {assumedHours.length > 0 && (
+            <p>
+              <strong>{assumedHours.length} employee(s) have no normal daily hours set</strong>, so 8
+              hours is assumed — which changes where their overtime threshold falls:{' '}
+              {assumedHours.join(', ')}.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Roll-up */}
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
@@ -106,9 +167,9 @@ export default async function PayrollPage({ searchParams }: Props) {
               <th className="px-4 py-3 font-medium">Employee</th>
               <th className="px-4 py-3 font-medium text-right">Hourly rate</th>
               <th className="px-4 py-3 font-medium text-right">Reg h</th>
-              <th className="px-4 py-3 font-medium text-right">OT h (1.5×)</th>
-              <th className="px-4 py-3 font-medium text-right">PH h (2×)</th>
-              <th className="px-4 py-3 font-medium text-right">PH OT h (3×)</th>
+              <th className="px-4 py-3 font-medium text-right">OT h{multiplierLabel('ot')}</th>
+              <th className="px-4 py-3 font-medium text-right">PH h{multiplierLabel('ph')}</th>
+              <th className="px-4 py-3 font-medium text-right">PH OT h{multiplierLabel('phOt')}</th>
               <th className="px-4 py-3 font-medium text-right">Total h</th>
               <th className="px-4 py-3 font-medium text-right">Total pay</th>
               <th className="px-4 py-3 font-medium">Cur.</th>
@@ -153,8 +214,14 @@ export default async function PayrollPage({ searchParams }: Props) {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Multipliers per MY Employment Act 1955 (2022 amendment). Pay = (Reg × rate) + (OT × rate × 1.5) +
-        (PH × rate × 2) + (PH OT × rate × 3).
+        Pay = (Reg × rate) + (OT × rate × OT multiplier) + (PH × rate × PH multiplier) + (PH OT ×
+        rate × PH OT multiplier). Each employee is costed against their own country&apos;s
+        multipliers from the{' '}
+        <Link href="/admin/statutory" className="underline">
+          statutory rulebook
+        </Link>
+        , not one fixed rulebook for both markets. The column headers above show the multipliers
+        currently in force.
       </p>
     </div>
   )

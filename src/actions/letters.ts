@@ -2,20 +2,11 @@
 
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { verifySession, requireRole } from '@/lib/dal'
+import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
-import {
-  isDriveConfigured,
-  getEmployeeFolderName,
-  getLetterFolderPath,
-  downloadFile,
-  deleteFile,
-} from '@/lib/google-drive'
-import {
-  generateLetterPdfToDrive,
-  stampSignatureOnDrivePdf,
-  getLetterTemplateId,
-} from '@/lib/google-docs'
+import { storage, putChecked } from '@/lib/storage'
+import { fillLetterTemplate, stampSignature } from '@/lib/letterPdf'
 import { deliverLetter } from '@/lib/notifications'
 import type { User, LetterType } from '@/generated/prisma/client'
 
@@ -36,7 +27,7 @@ function fmtDate(d: Date | null | undefined): string {
 }
 
 function isHr(role: string): boolean {
-  return role === 'ADMIN' || role === 'HR'
+  return can(role, 'letters.write')
 }
 
 /** Merge fields available to letter templates as {{placeholder}}. */
@@ -62,26 +53,48 @@ function buildReplacements(employee: User, officerName?: string): Record<string,
 }
 
 /**
- * Generate the letter PDF and store it in the employee's Drive folder.
- * Returns null when Drive/Docs isn't configured or the template id is missing
- * (so the flow still works on local dev — the record is created without a PDF).
+ * Generate the letter PDF and store it in Postgres.
+ *
+ * Letters used to be produced by copying a Google Doc template, merging via the
+ * Docs API and exporting to PDF into a Drive folder. The template is now a
+ * fillable PDF held in `LetterTemplate`, filled with pdf-lib and flattened.
+ *
+ * Returns null when no template has been uploaded for this letter type, which
+ * keeps the previous behaviour: the letter record is still created, just without
+ * a PDF, and HR can regenerate once a template exists. Run
+ * `npm run letters:placeholder-templates` (or use the button on the letters
+ * screen) to install a plain working template.
  */
 async function generateAndStorePdf(
   employee: User,
   type: LetterType,
   officerName?: string,
-): Promise<{ fileId: string; webViewLink: string } | null> {
-  if (!isDriveConfigured()) return null
-  const templateDocId = getLetterTemplateId(type)
-  if (!templateDocId) return null
+): Promise<{ blobId: string } | null> {
+  const template = await db.letterTemplate.findUnique({ where: { type } })
+  if (!template) return null
 
-  const folderName = getEmployeeFolderName(employee)
-  const folderPath = getLetterFolderPath(folderName)
-  const label = type === 'EMPLOYMENT' ? 'Employment Letter' : 'Confirmation Letter'
-  const fileName = `${label} - ${employee.firstName} ${employee.lastName} - ${fmtDate(new Date())}.pdf`
+  const templateFile = await storage.get(template.blobId)
+  if (!templateFile) {
+    console.error(`[letters] template ${template.id} references a missing blob`)
+    return null
+  }
+
   const replacements = buildReplacements(employee, officerName)
+  const { pdf, unknownFields } = await fillLetterTemplate({
+    templateBytes: templateFile.data,
+    replacements,
+  })
 
-  return generateLetterPdfToDrive({ templateDocId, replacements, fileName, folderPath })
+  if (unknownFields.length > 0) {
+    // Not fatal — the rest of the letter is fine — but a misspelled field name
+    // means that box silently prints blank, so make it visible in the logs.
+    console.warn(
+      `[letters] template for ${type} has fields that match no merge field: ${unknownFields.join(', ')}`,
+    )
+  }
+
+  const stored = await putChecked(pdf, 'application/pdf')
+  return { blobId: stored.blobId }
 }
 
 // ============================================================
@@ -101,7 +114,7 @@ export async function generateEmploymentLetter(employeeId: string): Promise<void
     })
     if (existing) return // don't duplicate
 
-    let pdf: { fileId: string; webViewLink: string } | null = null
+    let pdf: { blobId: string } | null = null
     try {
       pdf = await generateAndStorePdf(employee, 'EMPLOYMENT')
     } catch (err) {
@@ -113,8 +126,7 @@ export async function generateEmploymentLetter(employeeId: string): Promise<void
         employeeId,
         type: 'EMPLOYMENT',
         status: 'PENDING_REVIEW',
-        driveFileId: pdf?.fileId ?? null,
-        driveWebViewLink: pdf?.webViewLink ?? null,
+        blobId: pdf?.blobId ?? null,
       },
     })
     await createAuditLog({
@@ -155,7 +167,7 @@ export async function generateConfirmationLetter(
       return
     }
 
-    let pdf: { fileId: string; webViewLink: string } | null = null
+    let pdf: { blobId: string } | null = null
     try {
       pdf = await generateAndStorePdf(employee, 'CONFIRMATION')
     } catch (err) {
@@ -168,8 +180,7 @@ export async function generateConfirmationLetter(
         type: 'CONFIRMATION',
         status: 'PENDING_REVIEW',
         dueDate,
-        driveFileId: pdf?.fileId ?? null,
-        driveWebViewLink: pdf?.webViewLink ?? null,
+        blobId: pdf?.blobId ?? null,
       },
     })
     await createAuditLog({
@@ -302,19 +313,24 @@ export async function signLetter(
     const signer = await db.user.findUnique({ where: { id: session.userId } })
     const officerName = signer ? `${signer.firstName} ${signer.lastName}` : undefined
 
-    // Regenerate with officer name, stamp signature, store final PDF.
-    let finalPdf: { fileId: string; webViewLink: string } | null = null
+    // Regenerate with the officer's name filled in, stamp the drawn signature
+    // onto the result, and store that as the final PDF.
+    let finalPdf: { blobId: string } | null = null
+    const previousBlobId = letter.blobId
     try {
       const fresh = await generateAndStorePdf(letter.employee, letter.type, officerName)
       if (fresh) {
-        finalPdf = await stampSignatureOnDrivePdf({
-          fileId: fresh.fileId,
-          signatureDataUrl,
-        })
-        // Remove the old draft file if it was a different file.
-        if (letter.driveFileId && letter.driveFileId !== fresh.fileId) {
-          await deleteFile(letter.driveFileId).catch(() => {})
+        const freshFile = await storage.get(fresh.blobId)
+        if (freshFile) {
+          const stamped = await stampSignature({
+            pdfBytes: freshFile.data,
+            signatureDataUrl,
+          })
+          const stored = await putChecked(stamped, 'application/pdf')
+          finalPdf = { blobId: stored.blobId }
         }
+        // The unsigned regeneration was an intermediate step, not a kept file.
+        await storage.release(fresh.blobId)
       }
     } catch (err) {
       console.error('signLetter PDF error:', err)
@@ -326,10 +342,14 @@ export async function signLetter(
         status: 'SIGNED',
         signedAt: new Date(),
         signatureDataUrl,
-        driveFileId: finalPdf?.fileId ?? letter.driveFileId,
-        driveWebViewLink: finalPdf?.webViewLink ?? letter.driveWebViewLink,
+        blobId: finalPdf?.blobId ?? letter.blobId,
       },
     })
+
+    // The pre-signature draft is superseded once a signed version exists.
+    if (finalPdf && previousBlobId && previousBlobId !== finalPdf.blobId) {
+      await storage.release(previousBlobId)
+    }
     await createAuditLog({
       userId: session.userId,
       action: 'LETTER_SIGNED',
@@ -370,15 +390,15 @@ export async function sendLetterToEmployee(letterId: string): Promise<LetterActi
     if (letter.status !== 'SIGNED') return { error: 'Letter is not signed yet.' }
 
     let attachment: { fileName: string; buffer: Buffer } | undefined
-    if (letter.driveFileId && isDriveConfigured()) {
-      try {
-        const buffer = await downloadFile(letter.driveFileId)
+    if (letter.blobId) {
+      const file = await storage.get(letter.blobId)
+      if (file) {
         attachment = {
           fileName: `${letter.type === 'EMPLOYMENT' ? 'Employment' : 'Confirmation'} Letter.pdf`,
-          buffer,
+          buffer: file.data,
         }
-      } catch (err) {
-        console.error('sendLetterToEmployee download error:', err)
+      } else {
+        console.error(`[letters] letter ${letter.id} references a missing blob`)
       }
     }
 
@@ -414,7 +434,7 @@ export async function sendLetterToEmployee(letterId: string): Promise<LetterActi
 // ============================================================
 
 export async function getLettersToReview() {
-  await requireRole(['ADMIN', 'HR'])
+  await requireCapability('letters.read')
   return db.employmentLetter.findMany({
     where: { status: { in: ['PENDING_REVIEW', 'PENDING_SIGNATURE', 'SIGNED', 'OVERDUE'] } },
     include: {
@@ -425,20 +445,59 @@ export async function getLettersToReview() {
   })
 }
 
+/**
+ * A single letter, for the HR queue detail page and for the employee reading
+ * their own letter.
+ *
+ * Two things were wrong here before:
+ *
+ *   1. No authorization beyond "has a session" — any role could read any
+ *      employee's signed letter by walking letter ids.
+ *   2. `employee: true` returned the whole User row, which includes
+ *      `passwordHash` and `nric`, straight to the client component.
+ *
+ * Now the caller must either hold `letters.read` or be the letter's own
+ * subject, and only the fields the letter view actually renders are selected.
+ */
 export async function getLetterDetail(letterId: string) {
-  await verifySession()
-  return db.employmentLetter.findUnique({
+  const session = await verifySession()
+
+  const letter = await db.employmentLetter.findUnique({
     where: { id: letterId },
     include: {
-      employee: true,
+      employee: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          position: true,
+          department: true,
+          company: true,
+          country: true,
+          employeeNumber: true,
+          startDate: true,
+          probationEndDate: true,
+          confirmationDate: true,
+        },
+      },
       approvingOfficer: { select: { id: true, firstName: true, lastName: true } },
       reviewedBy: { select: { firstName: true, lastName: true } },
     },
   })
+
+  if (!letter) return null
+
+  const isOwnLetter = letter.employeeId === session.userId
+  if (!isOwnLetter && !can(session.role, 'letters.read')) {
+    throw new Error('You do not have permission to view this letter')
+  }
+
+  return letter
 }
 
 export async function getActiveOfficers() {
-  await requireRole(['ADMIN', 'HR'])
+  await requireCapability('letters.write')
   return db.user.findMany({
     where: { status: 'ACTIVE' },
     select: { id: true, firstName: true, lastName: true, position: true },

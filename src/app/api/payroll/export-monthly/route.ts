@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapabilityApi, withApiAuth } from '@/lib/dal'
+import { createAuditLog } from '@/lib/audit'
 import { computePayroll, monthBounds } from '@/lib/payroll'
+import { resolveRules } from '@/lib/statutory'
 
 export async function GET(request: NextRequest) {
-  await requireRole(['ADMIN'])
+  return withApiAuth(() => handler(request))
+}
+
+async function handler(request: NextRequest) {
+  // Pay figures and every part-timer's email leave the app in this file, so it
+  // is ADMIN-only and — unlike before — recorded in the audit log.
+  const session = await requireCapabilityApi('payroll.export')
 
   const monthParam = request.nextUrl.searchParams.get('month') ?? ''
   const match = /^(\d{4})-(\d{2})$/.exec(monthParam)
@@ -39,19 +47,24 @@ export async function GET(request: NextRequest) {
     orderBy: [{ userId: 'asc' }, { workDate: 'asc' }],
   })
 
+  // Per-country overtime rules, as they stood at the end of the pay month.
+  const [sgRules, myRules] = await Promise.all([resolveRules('SG', end), resolveRules('MY', end)])
+
   // -------- Summary sheet --------
   const summaryRows: Array<Record<string, string | number>> = []
   for (const u of partTimers) {
     const userEntries = entries.filter(e => e.userId === u.id)
     const dailyHours = u.normalDailyHours ? Number(u.normalDailyHours) : 8
     const rate = u.hourlyRate ? Number(u.hourlyRate) : 0
+    const resolved = u.country === 'MY' ? myRules : sgRules
+    const ot = resolved.rules.overtime
     const b = computePayroll(
       userEntries.map(e => ({
         workDate: e.workDate,
         hoursWorked: Number(e.hoursWorked),
         isPublicHoliday: e.isPublicHoliday,
       })),
-      { normalDailyHours: dailyHours, hourlyRate: rate },
+      { normalDailyHours: dailyHours, hourlyRate: rate, rules: ot },
     )
     summaryRows.push({
       Employee: `${u.firstName} ${u.lastName}`,
@@ -61,15 +74,19 @@ export async function GET(request: NextRequest) {
       'Hourly rate': rate,
       'Normal daily hours': dailyHours,
       'Regular hours': b.regularHours,
-      'OT hours (1.5×)': b.overtimeHours,
-      'PH hours (2×)': b.publicHolidayRegularHours,
-      'PH OT hours (3×)': b.publicHolidayOvertimeHours,
+      [`OT hours (${ot.overtimeMultiplier}×)`]: b.overtimeHours,
+      [`PH hours (${ot.publicHolidayMultiplier}×)`]: b.publicHolidayRegularHours,
+      [`PH OT hours (${ot.publicHolidayOvertimeMultiplier}×)`]: b.publicHolidayOvertimeHours,
       'Total hours': b.totalHours,
       'Regular pay': b.regularPay,
       'OT pay': b.overtimePay,
       'PH pay': b.publicHolidayRegularPay,
       'PH OT pay': b.publicHolidayOvertimePay,
       'Total pay': b.totalPay,
+      // A reader of this file needs to know whether the figures rest on
+      // statutory values anyone has actually signed off.
+      'Statutory rules verified': resolved.verified ? 'Yes' : 'NO — UNVERIFIED',
+      'Rate missing': rate === 0 ? 'YES — paid as zero' : '',
     })
   }
 
@@ -91,6 +108,19 @@ export async function GET(request: NextRequest) {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lineRows), 'Line items')
 
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }) as Buffer
+
+  await createAuditLog({
+    userId: session.userId,
+    action: 'PAYROLL_EXPORTED',
+    entityType: 'PAYROLL',
+    details: {
+      month: `${year}-${String(monthIndex + 1).padStart(2, '0')}`,
+      employeeCount: partTimers.length,
+      entryCount: entries.length,
+      includesEmails: true,
+      includesPayRates: true,
+    },
+  })
 
   const filename = `payroll-${year}-${String(monthIndex + 1).padStart(2, '0')}.xlsx`
   return new NextResponse(new Uint8Array(buf), {

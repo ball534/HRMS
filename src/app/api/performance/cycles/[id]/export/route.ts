@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
-import { requireRole } from '@/lib/dal'
+import { requireCapabilityApi, withApiAuth } from '@/lib/dal'
+import { createAuditLog } from '@/lib/audit'
 
 const TEMPLATE_LABEL: Record<string, string> = {
   FULL: 'Full review',
@@ -39,7 +40,11 @@ function fmtDate(d: Date | null | undefined): string {
 }
 
 export async function GET(_request: NextRequest, ctx: Ctx) {
-  await requireRole(['ADMIN'])
+  return withApiAuth(() => handler(ctx))
+}
+
+async function handler(ctx: Ctx) {
+  const session = await requireCapabilityApi('performance.export')
   const { id } = await ctx.params
 
   const cycle = await db.reviewCycle.findUnique({
@@ -190,6 +195,18 @@ export async function GET(_request: NextRequest, ctx: Ctx) {
   if (probationRows.length > 0) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(probationRows), 'Probation outcomes')
   }
+
+  await createAuditLog({
+    userId: session.userId,
+    action: 'RATINGS_EXPORTED',
+    entityType: 'REVIEW_CYCLE',
+    entityId: cycle.id,
+    details: {
+      cycleName: cycle.name,
+      cycleStatus: cycle.status,
+      reviewCount: cycle.reviews.length,
+    },
+  })
 
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }) as Buffer
   const filename = `performance-${cycle.name.replace(/[^a-z0-9-]+/gi, '_')}.xlsx`
