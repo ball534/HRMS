@@ -18,10 +18,16 @@ echo ==============================================================
 echo  HRMS demo starting at http://localhost:3000
 echo.
 echo  Demo logins (password for all: test123)
-echo    Admin     jin@company.com
-echo    HR        grace@iora.demo
-echo    Manager   sara@iora.demo    (signer/boss)
-echo    Employee  weiling@iora.demo (rich Journey data)
+echo    Admin      jin@company.com    Jin Lee
+echo    Admin      audrey@iora.demo   Finance - expenses/bonuses
+echo    HR         grace@iora.demo    fallback approver
+echo    Manager    marcus@iora.demo   has an approvals queue
+echo    Employee   weiling@iora.demo  rich Journey data
+echo    Employee   daniel@iora.demo   no manager - fallback routing
+echo    Employee   olivia@iora.demo   locked out of a test
+echo    Part-time  kumar@iora.demo    payroll data
+echo.
+echo  Reseed everything:  npm run db:seed-demo
 echo ==============================================================
 echo.
 npm run dev
