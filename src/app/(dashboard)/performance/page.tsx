@@ -1,11 +1,12 @@
 import { redirect } from 'next/navigation'
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 
 export default async function PerformanceLandingPage() {
   const session = await verifySession()
 
-  // Route by role
-  if (session.role === 'ADMIN') {
+  // Route by what the viewer can do
+  if (can(session.role, 'performance.admin')) {
     redirect('/performance/cycles')
   }
 

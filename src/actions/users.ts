@@ -7,9 +7,53 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
 import { verifySession } from '@/lib/dal'
-import { can } from '@/lib/permissions'
+import { can, ROLES, type RoleName } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
 import { generateEmploymentLetter, generateConfirmationLetter } from '@/actions/letters'
+
+/**
+ * The day-type rates a part-time letter quotes. Blank stays blank rather than
+ * becoming zero — "no Saturday rate agreed" and "works Saturdays for nothing"
+ * are different statements, and only one of them belongs in a letter.
+ */
+const HOURLY_RATE_FIELDS = {
+  hourlyRate: z.coerce.number().min(0).optional(),
+  hourlyRateWeekday: z.coerce.number().min(0).optional(),
+  hourlyRateSaturday: z.coerce.number().min(0).optional(),
+  hourlyRateSundayPh: z.coerce.number().min(0).optional(),
+  hourlyRateWeekend: z.coerce.number().min(0).optional(),
+} as const
+
+type RateInput = {
+  hourlyRate?: number
+  hourlyRateWeekday?: number
+  hourlyRateSaturday?: number
+  hourlyRateSundayPh?: number
+  hourlyRateWeekend?: number
+}
+
+/** Rate fields as Prisma values, with absent meaning null rather than zero. */
+function rateData(data: RateInput) {
+  return {
+    hourlyRate: data.hourlyRate ?? null,
+    hourlyRateWeekday: data.hourlyRateWeekday ?? null,
+    hourlyRateSaturday: data.hourlyRateSaturday ?? null,
+    hourlyRateSundayPh: data.hourlyRateSundayPh ?? null,
+    hourlyRateWeekend: data.hourlyRateWeekend ?? null,
+  }
+}
+
+/**
+ * `employmentType` follows the role rather than being set beside it.
+ *
+ * Part-time status decides both what the app shows (the timesheet) and how the
+ * person is paid, and when the two were independent fields nothing stopped a
+ * PART_TIME employment type sitting on an account with no timesheet access. The
+ * role is the answer; this derives the other field from it.
+ */
+function employmentTypeFor(role: RoleName, requested: 'EMPLOYEE' | 'CONTRACTOR') {
+  return role === 'PARTTIME' ? ('PART_TIME' as const) : requested
+}
 
 /** Probation end = startDate + probationMonths (default 3). Null if no start date. */
 function computeProbationEnd(startDate: Date | null | undefined, months: number | null | undefined): Date | null {
@@ -105,18 +149,20 @@ const CreateUserSchema = z.object({
   company: z.string().optional(),
   position: z.string().min(1, 'Position is required'),
   department: z.string().min(1, 'Department is required'),
-  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR', 'PART_TIME'], {
+  // PART_TIME is not offered here: part-time status comes from the PARTTIME
+  // role, and `employmentTypeFor` below derives this field from it.
+  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR'], {
     message: 'Employment type is required',
   }),
   country: z.enum(['SG', 'MY'], {
     message: 'Country is required',
   }),
+  citizenship: z.enum(['SG_CITIZEN', 'SG_PR', 'FOREIGNER']).optional(),
   startDate: z.string().optional(),
   probationMonths: z.coerce.number().int().min(0).max(24).optional(),
   reportingManagerId: z.string().optional(),
-  role: z.enum(['ADMIN', 'HR', 'MANAGER', 'EMPLOYEE', 'CONTRACTOR'], {
-    message: 'Role is required',
-  }),
+  role: z.enum(ROLES, { message: 'Role is required' }),
+  ...HOURLY_RATE_FIELDS,
 })
 
 export type CreateUserState = {
@@ -151,10 +197,16 @@ export async function createUser(
     department: formData.get('department'),
     employmentType: formData.get('employmentType'),
     country: formData.get('country'),
+    citizenship: formData.get('citizenship') || undefined,
     startDate: formData.get('startDate') || undefined,
     probationMonths: formData.get('probationMonths') || undefined,
     reportingManagerId: formData.get('reportingManagerId') || undefined,
     role: formData.get('role'),
+    hourlyRate: formData.get('hourlyRate') || undefined,
+    hourlyRateWeekday: formData.get('hourlyRateWeekday') || undefined,
+    hourlyRateSaturday: formData.get('hourlyRateSaturday') || undefined,
+    hourlyRateSundayPh: formData.get('hourlyRateSundayPh') || undefined,
+    hourlyRateWeekend: formData.get('hourlyRateWeekend') || undefined,
   }
 
   const parsed = CreateUserSchema.safeParse(raw)
@@ -198,13 +250,15 @@ export async function createUser(
       company: data.company || undefined,
       position: data.position,
       department: data.department,
-      employmentType: data.employmentType,
+      employmentType: employmentTypeFor(data.role, data.employmentType),
       country: data.country,
+      citizenship: data.citizenship,
       startDate: startDate ?? undefined,
       probationMonths,
       probationEndDate: computeProbationEnd(startDate, probationMonths) ?? undefined,
       reportingManagerId: data.reportingManagerId || undefined,
       role: data.role,
+      ...rateData(data),
       passwordHash,
       mustChangePassword: true,
       status: 'ACTIVE',
@@ -265,13 +319,15 @@ const UpdateUserSchema = z.object({
   company: z.string().optional(),
   position: z.string().optional(),
   department: z.string().optional(),
-  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR', 'PART_TIME']),
+  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR']),
   country: z.enum(['SG', 'MY']),
+  citizenship: z.enum(['SG_CITIZEN', 'SG_PR', 'FOREIGNER']).optional(),
   startDate: z.string().optional(),
   probationMonths: z.coerce.number().int().min(0).max(24).optional(),
   reportingManagerId: z.string().optional(),
-  role: z.enum(['ADMIN', 'HR', 'MANAGER', 'EMPLOYEE', 'CONTRACTOR']),
+  role: z.enum(ROLES),
   status: z.enum(['ACTIVE', 'INACTIVE', 'TERMINATED', 'REJECTED']),
+  ...HOURLY_RATE_FIELDS,
 })
 
 export type UpdateUserState = {
@@ -307,11 +363,17 @@ export async function updateUser(
     department: formData.get('department') || undefined,
     employmentType: formData.get('employmentType'),
     country: formData.get('country'),
+    citizenship: formData.get('citizenship') || undefined,
     startDate: formData.get('startDate') || undefined,
     probationMonths: formData.get('probationMonths') || undefined,
     reportingManagerId: formData.get('reportingManagerId') || undefined,
     role: formData.get('role'),
     status: formData.get('status'),
+    hourlyRate: formData.get('hourlyRate') || undefined,
+    hourlyRateWeekday: formData.get('hourlyRateWeekday') || undefined,
+    hourlyRateSaturday: formData.get('hourlyRateSaturday') || undefined,
+    hourlyRateSundayPh: formData.get('hourlyRateSundayPh') || undefined,
+    hourlyRateWeekend: formData.get('hourlyRateWeekend') || undefined,
   }
 
   const parsed = UpdateUserSchema.safeParse(raw)
@@ -342,7 +404,7 @@ export async function updateUser(
       employeeNumber: true, probationMonths: true, startDate: true,
       position: true, department: true, phone: true, dateOfBirth: true, nationality: true,
       nric: true, passportNumber: true, passportExpiry: true, company: true,
-      employmentType: true, country: true, reportingManagerId: true,
+      employmentType: true, country: true, citizenship: true, reportingManagerId: true,
     },
   })
 
@@ -353,15 +415,15 @@ export async function updateUser(
   // ---- Guards on the sensitive fields -----------------------------------
   //
   // Role and status are the two fields that decide what someone can do and
-  // whether they can log in at all, so changing them is an ADMIN act even
-  // though HR may edit everything else on the record.
+  // whether they can log in at all, so they need `people.write.role` rather
+  // than the ordinary `people.write` that covers the rest of the record.
   const changingRole = data.role !== before.role
   const changingStatus = data.status !== before.status
   if ((changingRole || changingStatus) && !can(session.role, 'people.write.role')) {
     return {
       error: changingRole
-        ? 'Only an administrator can change someone\'s role.'
-        : 'Only an administrator can change someone\'s status. Use the offboarding flow to terminate an employee.',
+        ? 'You do not have permission to change someone\'s role.'
+        : 'You do not have permission to change someone\'s status. Use the offboarding flow to terminate an employee.',
     }
   }
 
@@ -376,17 +438,17 @@ export async function updateUser(
     }
   }
 
-  // Nothing used to stop the last ADMIN demoting or deactivating themselves —
-  // one click locked the whole Group out of every admin function with no
-  // in-app way back.
-  if (before.role === 'ADMIN' && (changingRole || data.status !== 'ACTIVE')) {
-    const otherActiveAdmins = await db.user.count({
-      where: { role: 'ADMIN', status: 'ACTIVE', id: { not: data.id } },
+  // Nothing used to stop the last full-access account demoting or deactivating
+  // itself — one click locked the whole Group out of every administrative
+  // function with no in-app way back.
+  if (before.role === 'HR' && (changingRole || data.status !== 'ACTIVE')) {
+    const otherActiveHr = await db.user.count({
+      where: { role: 'HR', status: 'ACTIVE', id: { not: data.id } },
     })
-    if (otherActiveAdmins === 0) {
+    if (otherActiveHr === 0) {
       return {
         error:
-          'This is the only active administrator. Promote someone else to ADMIN first, or nobody will be able to administer the system.',
+          'This is the only active HR account. Give someone else the HR role first, or nobody will be able to administer the system.',
       }
     }
   }
@@ -434,14 +496,16 @@ export async function updateUser(
       company: data.company || null,
       position: data.position || null,
       department: data.department || null,
-      employmentType: data.employmentType,
+      employmentType: employmentTypeFor(data.role, data.employmentType),
       country: data.country,
+      citizenship: data.citizenship ?? null,
       startDate,
       probationMonths,
       probationEndDate: computeProbationEnd(startDate, probationMonths),
       reportingManagerId: data.reportingManagerId || null,
       role: data.role,
       status: data.status,
+      ...rateData(data),
       // Auto-set terminatedAt when status changes to TERMINATED, clear when un-terminating
       terminatedAt:
         data.status === 'TERMINATED' && before.status !== 'TERMINATED'
@@ -472,8 +536,9 @@ export async function updateUser(
         company: data.company || null,
         position: data.position || null,
         department: data.department || null,
-        employmentType: data.employmentType,
+        employmentType: employmentTypeFor(data.role, data.employmentType),
         country: data.country,
+        citizenship: data.citizenship ?? null,
         startDate,
         reportingManagerId: data.reportingManagerId || null,
         role: data.role,

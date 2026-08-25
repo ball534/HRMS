@@ -21,7 +21,6 @@ const MIN_REASON_LENGTH = 10
 type Props = {
   entityType:
     | 'LEAVE'
-    | 'EXPENSE'
     | 'TIME_ENTRY'
     | 'REVIEW_CYCLE'
     | 'PERFORMANCE_REVIEW'

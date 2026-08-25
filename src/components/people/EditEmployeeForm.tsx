@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { updateUser, type UpdateUserState } from '@/actions/users'
+import { DEPARTMENTS, isLogistics } from '@/lib/departments'
+import { ROLES, ROLE_LABELS } from '@/lib/permissions'
 
 type User = {
   id: string
@@ -31,6 +33,12 @@ type User = {
   reportingManagerId?: string | null
   role: string
   status: string
+  citizenship?: string | null
+  hourlyRate?: string | null
+  hourlyRateWeekday?: string | null
+  hourlyRateSaturday?: string | null
+  hourlyRateSundayPh?: string | null
+  hourlyRateWeekend?: string | null
 }
 
 type Manager = {
@@ -50,6 +58,13 @@ const initialState: UpdateUserState = {}
 export function EditEmployeeForm({ user, managers, onClose }: Props) {
   const router = useRouter()
   const [state, formAction, isPending] = useActionState(updateUser, initialState)
+
+  // The rate fields follow the account type and department, the same way the
+  // add-employee form does — a part-timer in Logistics has a Saturday and a
+  // Sunday/PH rate, everyone else a single weekend rate.
+  const [role, setRole] = useState(user.role)
+  const [department, setDepartment] = useState(user.department ?? '')
+  const partTime = role === 'PARTTIME'
 
   useEffect(() => {
     if (state.success) {
@@ -146,18 +161,19 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
           {/* Role & Employment Type */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <Label htmlFor="role">Role *</Label>
+              <Label htmlFor="role">Account type *</Label>
               <select
                 id="role"
                 name="role"
-                defaultValue={user.role}
+                value={role}
+                onChange={e => setRole(e.target.value)}
                 className="mt-1 h-9 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm focus-visible:border-ring focus-visible:outline-none dark:bg-input/30"
               >
-                <option value="ADMIN">Admin</option>
-                <option value="HR">HR</option>
-                <option value="MANAGER">Manager</option>
-                <option value="EMPLOYEE">Employee</option>
-                <option value="CONTRACTOR">Contractor</option>
+                {ROLES.map(r => (
+                  <option key={r} value={r}>
+                    {ROLE_LABELS[r]}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -165,13 +181,15 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
               <select
                 id="employmentType"
                 name="employmentType"
-                defaultValue={user.employmentType}
+                defaultValue={user.employmentType === 'PART_TIME' ? 'EMPLOYEE' : user.employmentType}
                 className="mt-1 h-9 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm focus-visible:border-ring focus-visible:outline-none dark:bg-input/30"
               >
                 <option value="EMPLOYEE">Employee</option>
                 <option value="CONTRACTOR">Contractor</option>
-                <option value="PART_TIME">Part-time</option>
               </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Part-time comes from the account type, not from here.
+              </p>
             </div>
           </div>
 
@@ -183,7 +201,24 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
             </div>
             <div>
               <Label htmlFor="department">Department</Label>
-              <Input id="department" name="department" defaultValue={user.department ?? ''} className="mt-1" />
+              <select
+                id="department"
+                name="department"
+                value={department}
+                onChange={e => setDepartment(e.target.value)}
+                className="mt-1 h-9 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm focus-visible:border-ring focus-visible:outline-none dark:bg-input/30"
+              >
+                <option value="">— none —</option>
+                {DEPARTMENTS.map(d => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+                {/* A value set before the list existed stays selectable rather than being silently changed. */}
+                {department && !DEPARTMENTS.includes(department as (typeof DEPARTMENTS)[number]) && (
+                  <option value={department}>{department} (unrecognised)</option>
+                )}
+              </select>
             </div>
           </div>
 
@@ -218,11 +253,69 @@ export function EditEmployeeForm({ user, managers, onClose }: Props) {
             </div>
           </div>
 
-          {/* Nationality */}
-          <div>
-            <Label htmlFor="nationality">Nationality</Label>
-            <Input id="nationality" name="nationality" defaultValue={user.nationality ?? ''} className="mt-1" />
+          {/* Nationality + citizenship */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <Label htmlFor="nationality">Nationality</Label>
+              <Input id="nationality" name="nationality" defaultValue={user.nationality ?? ''} className="mt-1" />
+            </div>
+            <div>
+              <Label htmlFor="citizenship">Citizenship</Label>
+              <select
+                id="citizenship"
+                name="citizenship"
+                defaultValue={user.citizenship ?? ''}
+                className="mt-1 h-9 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm focus-visible:border-ring focus-visible:outline-none dark:bg-input/30"
+              >
+                <option value="">Not recorded</option>
+                <option value="SG_CITIZEN">SG Citizen</option>
+                <option value="SG_PR">SG PR</option>
+                <option value="FOREIGNER">Foreigner</option>
+              </select>
+            </div>
           </div>
+
+          {/* Hourly rates — the figures a part-time letter quotes */}
+          {partTime && (
+            <div className="rounded-lg border border-border p-4">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Hourly rates
+              </p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                {isLogistics(department)
+                  ? 'Logistics: weekday, Saturday and Sunday/PH.'
+                  : 'Retail: weekday and weekend.'}{' '}
+                Timesheet pay and the payroll export price every hour at the timesheet rate.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="hourlyRateWeekday">Weekday</Label>
+                  <Input id="hourlyRateWeekday" name="hourlyRateWeekday" type="number" step="0.01" min={0} defaultValue={user.hourlyRateWeekday ?? ''} className="mt-1" />
+                </div>
+                {isLogistics(department) ? (
+                  <>
+                    <div>
+                      <Label htmlFor="hourlyRateSaturday">Saturday</Label>
+                      <Input id="hourlyRateSaturday" name="hourlyRateSaturday" type="number" step="0.01" min={0} defaultValue={user.hourlyRateSaturday ?? ''} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label htmlFor="hourlyRateSundayPh">Sunday / PH</Label>
+                      <Input id="hourlyRateSundayPh" name="hourlyRateSundayPh" type="number" step="0.01" min={0} defaultValue={user.hourlyRateSundayPh ?? ''} className="mt-1" />
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <Label htmlFor="hourlyRateWeekend">Weekend</Label>
+                    <Input id="hourlyRateWeekend" name="hourlyRateWeekend" type="number" step="0.01" min={0} defaultValue={user.hourlyRateWeekend ?? ''} className="mt-1" />
+                  </div>
+                )}
+                <div>
+                  <Label htmlFor="hourlyRate">Timesheet rate</Label>
+                  <Input id="hourlyRate" name="hourlyRate" type="number" step="0.01" min={0} defaultValue={user.hourlyRate ?? ''} className="mt-1" />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Identity / records */}
           <div className="rounded-lg border border-border p-4">

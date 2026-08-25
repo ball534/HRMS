@@ -16,6 +16,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { can } from '@/lib/permissions'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -723,7 +724,7 @@ function Section({
 // ===================================================================
 
 export function DocumentsClient({ role, userId, employees }: Props) {
-  const isHR = role === 'ADMIN' || role === 'HR'
+  const isHR = can(role, 'documents.admin')
   const [droppedFiles, setDroppedFiles] = useState<File[] | null>(null)
   const [overlayOn, setOverlayOn] = useState(false)
   const dragCounter = useRef(0)

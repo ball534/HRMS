@@ -6,10 +6,8 @@ import {
   LayoutDashboard,
   Users,
   Calendar,
-  Clock,
   Receipt,
   CalendarDays,
-  CheckSquare,
   FolderOpen,
   Lock,
   Settings,
@@ -20,11 +18,13 @@ import {
   GraduationCap,
   LineChart,
   FileSignature,
-  CircleUserRound,
+  Mail,
   ScrollText,
   Scale,
   SlidersHorizontal,
-  FileText,
+  UserPlus,
+  Network,
+  FileCheck,
 } from 'lucide-react'
 import { can, type Capability } from '@/lib/permissions'
 import {
@@ -40,9 +40,10 @@ import {
 
 type Props = {
   role: string
-  userId: string
   isPartTime: boolean
   hasDirectReports: boolean
+  /** Retail floor staff get the Learning Hub; nobody else does. */
+  isRetail: boolean
 }
 
 type NavItem = {
@@ -53,65 +54,91 @@ type NavItem = {
   capability?: Capability
 }
 
-export function Sidebar({ role, userId, isPartTime, hasDirectReports }: Props) {
+/**
+ * Navigation, grouped by whose work it is.
+ *
+ * Everything used to sit under one "HR" heading — an employee checking their own
+ * leave and an HR administrator maintaining the statutory rulebook read the same
+ * list of links. Now an employee sees a short unheaded list of their own things,
+ * a manager gains a "My team" group, and the administrative screens appear only
+ * for whoever holds the capability each one needs.
+ */
+export function Sidebar({ role, isPartTime, hasDirectReports, isRetail }: Props) {
   const pathname = usePathname()
-  const isAdmin = role === 'ADMIN'
 
   const sections: { label?: string; items: NavItem[] }[] = []
 
-  // Dashboard always
-  sections.push({ items: [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }] })
-
-  // HR section
-  const hrItems: NavItem[] = [
-    { href: `/people/${userId}`, label: 'My Profile', icon: CircleUserRound },
-    { href: '/people', label: 'People', icon: Users },
-    { href: '/team-calendar', label: 'Team Calendar', icon: Calendar },
-    { href: '/leave', label: 'Time Off', icon: Clock },
+  // --- Mine. No heading: for most people this is the whole sidebar. ---
+  const mine: NavItem[] = [
+    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/my-letters', label: 'My Letters', icon: Mail },
+    { href: '/documents', label: 'Documents', icon: FolderOpen },
   ]
-  // Approvals used to have no navigation entry at all — the only route in was a
-  // dashboard card that rendered nothing once the queue was empty, so an
-  // approver could never look back at what they had already actioned.
-  if (hasDirectReports || can(role, 'leave.approve')) {
-    hrItems.push({ href: '/approvals', label: 'Approvals', icon: CheckSquare })
+  // The timesheet is for people who are paid by the hour, and for whoever
+  // administers it.
+  if (isPartTime || can(role, 'time.admin')) {
+    mine.push({ href: '/time', label: 'Timesheet', icon: Timer })
   }
-  // Timesheet: visible to part-timers and to admins/managers (for approvals access)
-  if (isPartTime || isAdmin || hasDirectReports) {
-    hrItems.push({ href: '/time', label: 'Timesheet', icon: Timer })
+  // The onboarding course is retail training. Everyone else has no use for it;
+  // HR reaches the content through the admin screen below.
+  if (isRetail) {
+    mine.push({ href: '/learning', label: 'Learning', icon: GraduationCap })
   }
-  hrItems.push({ href: '/performance', label: 'Performance', icon: Target })
-  hrItems.push({ href: '/documents', label: 'Documents', icon: FolderOpen })
-  hrItems.push({ href: '/learning', label: 'Learning', icon: GraduationCap })
-  sections.push({ label: 'HR', items: hrItems })
+  sections.push({ items: mine })
 
-  // Administration. Every entry is gated on the capability its page requires
-  // rather than on `role === 'ADMIN'`, so the HR team reaches the screens they
-  // are now authorized for instead of having to borrow the admin login.
-  const adminNav: NavItem[] = [
-    { href: '/holidays', label: 'Holidays', icon: CalendarDays, capability: 'holidays.write' },
+  // --- My team: managers, and anyone with direct reports. ---
+  const team: NavItem[] = []
+  const isHrWide = can(role, 'people.read.directory')
+  if (can(role, 'people.read.department') && !isHrWide) {
+    team.push({ href: '/people', label: 'My Department', icon: Users })
+  }
+  // Managers interview for their own department, so Candidates belongs to their
+  // team rather than to the HR group below (where HR's own entry lives).
+  if (can(role, 'candidates.read') && !isHrWide) {
+    team.push({ href: '/candidates', label: 'Candidates', icon: UserPlus })
+  }
+  if (hasDirectReports || can(role, 'people.read.department')) {
+    team.push({ href: '/team-calendar', label: 'Team Calendar', icon: Calendar })
+    team.push({ href: '/performance', label: 'Performance', icon: Target })
+  }
+  if (can(role, 'learning.progress.read') && !can(role, 'learning.admin')) {
+    team.push({ href: '/admin/learning', label: 'Learning Progress', icon: LineChart })
+  }
+  if (team.length) {
+    sections.push({ label: 'MY TEAM', items: team })
+  }
+
+  // --- HR. Every entry gated on the capability its page requires. ---
+  const hrNav: NavItem[] = [
+    // Gated on the company-wide directory rather than on `candidates.read`,
+    // which managers also hold — theirs is the department-scoped entry above.
+    { href: '/candidates', label: 'Candidates', icon: UserPlus, capability: 'people.read.directory' },
+    { href: '/letters', label: 'Letters', icon: FileSignature, capability: 'letters.read' },
+    { href: '/onboarding', label: 'Onboarding', icon: FileCheck, capability: 'documents.admin' },
+    { href: '/people', label: 'People', icon: Users, capability: 'people.read.directory' },
+    { href: '/people/org-chart', label: 'Org Chart', icon: Network, capability: 'people.read.directory' },
+    { href: '/team-calendar', label: 'Team Calendar', icon: Calendar, capability: 'people.read.directory' },
+    { href: '/performance', label: 'Performance', icon: Target, capability: 'performance.admin' },
     { href: '/admin/leave', label: 'Leave Management', icon: Settings, capability: 'leave.admin' },
+    { href: '/holidays', label: 'Holidays', icon: CalendarDays, capability: 'holidays.write' },
     { href: '/admin/blackouts', label: 'Blackout Windows', icon: CalendarDays, capability: 'blackouts.write' },
-    { href: '/admin/letters', label: 'Letters', icon: FileSignature, capability: 'letters.read' },
-    { href: '/admin/letter-templates', label: 'Letter Templates', icon: FileText, capability: 'letters.write' },
     { href: '/admin/work-passes', label: 'Work Passes', icon: IdCard, capability: 'workpass.read' },
     { href: '/payroll', label: 'Payroll', icon: Receipt, capability: 'payroll.read' },
     { href: '/rewards/cycles', label: 'Rewards', icon: Gift, capability: 'rewards.admin' },
-    { href: '/admin/learning', label: 'Learning Progress', icon: LineChart, capability: 'learning.admin' },
+    { href: '/admin/learning', label: 'Learning', icon: LineChart, capability: 'learning.admin' },
   ]
-  const adminItems = adminNav.filter(item => !item.capability || can(role, item.capability))
-
-  if (adminItems.length) {
-    sections.push({ label: 'ADMIN', items: adminItems })
+  const hrItems = hrNav.filter(item => !item.capability || can(role, item.capability))
+  if (hrItems.length) {
+    sections.push({ label: 'HR', items: hrItems })
   }
 
-  // Governance — audit trail, statutory rulebook, org settings.
+  // --- Governance: audit trail, statutory rulebook, org settings. ---
   const govNav: NavItem[] = [
     { href: '/admin/audit', label: 'Audit Log', icon: ScrollText, capability: 'audit.read' },
     { href: '/admin/statutory', label: 'Statutory Rules', icon: Scale, capability: 'statutory.write' },
     { href: '/admin/settings', label: 'Settings', icon: SlidersHorizontal, capability: 'settings.write' },
   ]
   const govItems = govNav.filter(item => !item.capability || can(role, item.capability))
-
   if (govItems.length) {
     sections.push({ label: 'GOVERNANCE', items: govItems })
   }
@@ -139,11 +166,11 @@ export function Sidebar({ role, userId, isPartTime, hasDirectReports }: Props) {
                   item.href === '/dashboard'
                     ? pathname === '/dashboard'
                     : item.href === '/people'
-                      ? pathname.startsWith('/people') && pathname !== `/people/${userId}`
+                      ? pathname === '/people' || pathname.startsWith('/people/')
                       : pathname.startsWith(item.href)
 
                 return (
-                  <SidebarMenuItem key={item.href}>
+                  <SidebarMenuItem key={`${section.label ?? 'mine'}-${item.href}`}>
                     <SidebarMenuButton
                       isActive={isActive}
                       render={

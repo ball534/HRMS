@@ -89,7 +89,7 @@ function defaultLabelsForScale(scale: number): string[] {
 }
 
 // ============================================================
-// createReviewCycle (ADMIN)
+// createReviewCycle (performance.admin)
 // ============================================================
 
 export async function createReviewCycle(
@@ -339,7 +339,7 @@ export async function upsertGoal(
       include: { cycle: true },
     })
 
-    if (session.userId !== review.managerId && session.role !== 'ADMIN') {
+    if (session.userId !== review.managerId && !can(session.role, 'performance.admin')) {
       return { error: 'Only the assigned manager can set goals.' }
     }
     if (review.cycle.status !== 'ACTIVE') {
@@ -407,7 +407,7 @@ export async function deleteGoal(goalId: string): Promise<ReviewActionState> {
       where: { id: goalId },
       include: { review: { include: { cycle: true } } },
     })
-    if (session.userId !== goal.review.managerId && session.role !== 'ADMIN') {
+    if (session.userId !== goal.review.managerId && !can(session.role, 'performance.admin')) {
       return { error: 'Only the assigned manager can delete goals.' }
     }
     if (goal.review.cycle.status !== 'ACTIVE') {
@@ -444,7 +444,7 @@ export async function evaluateGoal(
       include: { review: { include: { cycle: true } } },
     })
 
-    if (session.userId !== goal.review.managerId && session.role !== 'ADMIN') {
+    if (session.userId !== goal.review.managerId && !can(session.role, 'performance.admin')) {
       return { error: 'Only the assigned manager can evaluate goals.' }
     }
     if (goal.review.cycle.status !== 'EVALUATION') {
@@ -661,7 +661,7 @@ export async function acknowledgeReview(
 }
 
 // ============================================================
-// reopenReview (ADMIN only — unlocks an acknowledged review)
+// reopenReview (performance.admin — unlocks an acknowledged review)
 // ============================================================
 
 export async function reopenReview(reviewId: string): Promise<ReviewActionState> {
@@ -744,10 +744,11 @@ export async function getReviewDetail(reviewId: string) {
     },
   })
 
-  // Authorization: employee can see own, manager can see assigned, admin can see all
+  // Authorization: employee sees their own, the assigned manager sees theirs,
+  // and whoever administers cycles sees all of them.
   const isEmployee = review.employeeId === session.userId
   const isManager = review.managerId === session.userId
-  const isAdmin = session.role === 'ADMIN'
+  const isAdmin = can(session.role, 'performance.admin')
   if (!isEmployee && !isManager && !isAdmin) {
     throw new Error('Not authorised to view this review')
   }

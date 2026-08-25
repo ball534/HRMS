@@ -66,7 +66,7 @@ export const SETTING_DEFS = {
     group: 'Approvals',
     label: 'Block self-approval',
     description:
-      'Prevent anyone actioning their own leave, timesheet, expense claim, bonus or review. Leave this on unless you have a specific reason not to.',
+      'Prevent anyone actioning their own leave, timesheet, bonus or review. Leave this on unless you have a specific reason not to.',
   },
   'lms.maxTestAttempts': {
     schema: z.number().int().min(1).max(20),
@@ -81,7 +81,7 @@ export const SETTING_DEFS = {
     group: 'Files',
     label: 'Maximum upload size (MB)',
     description:
-      'Applies to documents, expense receipts and leave attachments. Files are stored in the database, so raising this also grows your backups. Must stay at or below the server body limit in next.config.ts (currently 10 MB).',
+      'Applies to documents, onboarding uploads, work-pass scans, CVs and leave attachments. Files are stored in the database, so raising this also grows your backups. Must stay at or below the server body limit in next.config.ts (currently 10 MB).',
   },
 
   // Work-pass renewal lead times.
@@ -112,6 +112,20 @@ export const SETTING_DEFS = {
     label: 'All other pass types — remind this many days before expiry',
     description:
       'Dependant passes, LTVP+, and anything recorded as Other.',
+  },
+  // Who signs an employment letter, by department.
+  //
+  // Held as one map rather than nine settings so that adding a department to
+  // src/lib/departments.ts needs no new setting key. A department with nobody
+  // mapped is not an error: the letter workspace simply opens with the
+  // signatory field empty and HR picks someone.
+  'letters.departmentSignatories': {
+    schema: z.record(z.string(), z.string().uuid().nullable()),
+    default: {} as Record<string, string | null>,
+    group: 'Letters',
+    label: 'Default signatory by department',
+    description:
+      'Pre-selected as the approving officer when an employment letter is drafted for someone in that department. HR can still change the signatory on any individual letter.',
   },
   'notify.emailEnabled': {
     schema: z.boolean(),

@@ -13,10 +13,12 @@ import {
 } from '@/components/ui/table'
 import type { AuditAction, AuditEntityType } from '@/generated/prisma/client'
 
+// EXPENSE is deliberately absent: the module is gone, but rows written while it
+// existed are still in the log and still read correctly — the enum value stays
+// in the schema for exactly that reason.
 const ENTITY_TYPES: AuditEntityType[] = [
   'USER',
   'LEAVE',
-  'EXPENSE',
   'DOCUMENT',
   'HOLIDAY',
   'REVIEW_CYCLE',

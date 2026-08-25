@@ -16,36 +16,28 @@ export type DashboardData = {
     country: string
   } | null
   pendingLeaveCount: number
-  pendingExpenseCount: number
   birthdays: BirthdayEntry[]
 }
 
-export async function getDashboardData(
-  userId: string,
-  role: string
-): Promise<DashboardData> {
-  const [user, pendingLeaveCount, pendingExpenseCount, allUsers] =
-    await Promise.all([
-      db.user.findUnique({
-        where: { id: userId },
-        select: { firstName: true, lastName: true, country: true },
-      }),
-      db.leaveRequest.count({
-        where: { approverId: userId, status: 'PENDING' },
-      }),
-      role === 'ADMIN'
-        ? db.expense.count({ where: { status: 'FOR_APPROVAL' } })
-        : Promise.resolve(0),
-      db.user.findMany({
-        where: { status: 'ACTIVE', dateOfBirth: { not: null } },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          dateOfBirth: true,
-        },
-      }),
-    ])
+export async function getDashboardData(userId: string): Promise<DashboardData> {
+  const [user, pendingLeaveCount, allUsers] = await Promise.all([
+    db.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true, lastName: true, country: true },
+    }),
+    db.leaveRequest.count({
+      where: { approverId: userId, status: 'PENDING' },
+    }),
+    db.user.findMany({
+      where: { status: 'ACTIVE', dateOfBirth: { not: null } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        dateOfBirth: true,
+      },
+    }),
+  ])
 
   const currentMonth = new Date().getMonth() + 1
   const birthdays = allUsers
@@ -63,7 +55,6 @@ export async function getDashboardData(
       ? { firstName: user.firstName, lastName: user.lastName, country: user.country }
       : null,
     pendingLeaveCount,
-    pendingExpenseCount,
     birthdays,
   }
 }

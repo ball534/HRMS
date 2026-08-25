@@ -12,20 +12,21 @@
  * happens to have it, and to keep the role -> capability mapping in one table
  * you can read top to bottom.
  *
- * The rules encoded below:
+ * There are four account types, and they exist to match how the business
+ * describes its own people rather than to model a permission hierarchy:
  *
- *   ADMIN    every capability, without exception. ADMIN is the superset of
- *            HR and always retains access HR does not have.
- *   HR       everything operational: people, identity records, leave admin,
- *            holidays, blackouts, work passes, letters, performance and
- *            reward cycles, learning admin, documents, audit, statutory
- *            rules. Deliberately NOT: hard deletes, role/status changes,
- *            payroll export, or paying money out (expense reimbursement and
- *            bonus payout).
- *   MANAGER  approving what their own reports submit, nothing administrative.
- *   EMPLOYEE
- *   CONTRACTOR
- *            self-service only; they hold no capability from this table.
+ *   HR        full access. There is no separate administrator account any
+ *             more: ADMIN sat above HR, so the HR team either lacked powers
+ *             they needed daily or borrowed the admin login. HR holds every
+ *             capability, including the destructive and money-out ones.
+ *   MANAGER   their own team and their own department. They approve what
+ *             their reports submit, read (but never edit) the people in their
+ *             department, and follow their team's learning progress. Nothing
+ *             administrative, no identity records, no pay.
+ *   EMPLOYEE  self-service only. Holds no capability from this table.
+ *   PARTTIME  self-service plus the timesheet. Also holds no capability —
+ *             timesheet access is about employment arrangement, not authority,
+ *             and is decided by the role/employment type directly.
  *
  * Usage — server actions and pages:
  *
@@ -46,19 +47,24 @@
 
 export const CAPABILITIES = [
   // --- People & org ---
-  'people.read.directory', // list colleagues (name, position, department)
+  'people.read.directory', // list everyone in the company
+  'people.read.department', // list only your own department, read-only  [MANAGER]
   'people.read.identity', // NRIC / passport / DOB / nationality
   'people.write', // create + edit employee records
-  'people.write.role', // change someone's role or status  [ADMIN only]
+  'people.write.role', // change someone's role or status
   'people.offboard', // run the offboarding flow
-  'people.delete', // hard delete a record               [ADMIN only]
+  'people.delete', // hard delete a record
   'people.reset_password', // force a password reset for someone else
+
+  // --- Hiring ---
+  'candidates.read', // see applications
+  'candidates.write', // shortlist, record the interview outcome, archive
 
   // --- Leave ---
   'leave.approve', // action a request routed to you
   'leave.admin', // balances, entitlement overrides, carry-forward
   'leave.admin.import', // bulk CSV import
-  'leave.delete', // hard delete a leave record         [ADMIN only]
+  'leave.delete', // hard delete a leave record
   'holidays.write',
   'blackouts.write',
 
@@ -66,14 +72,11 @@ export const CAPABILITIES = [
   'time.approve',
   'time.admin', // unlock/correct approved entries
   'payroll.read',
-  'payroll.export', // pay figures + emails leave the app  [ADMIN only]
+  'payroll.export', // pay figures + emails leave the app
 
-  // --- Expenses ---
-  'expense.approve',
-  'expense.admin', // override an approval, edit in flight
-  'expense.reimburse', // release money                       [ADMIN only]
-  'expense.export',
-  'expense.delete', // [ADMIN only]
+  // The expenses module was removed. Its capabilities went with it — if claims
+  // ever come back, they come back with their own vocabulary rather than
+  // inheriting a set of names nothing has checked in the meantime.
 
   // --- Performance ---
   'performance.admin', // create/open/close cycles, scoping
@@ -82,11 +85,12 @@ export const CAPABILITIES = [
 
   // --- Rewards ---
   'rewards.admin', // cycles + allocations
-  'rewards.pay', // mark bonuses paid                   [ADMIN only]
+  'rewards.pay', // mark bonuses paid
   'rewards.export',
 
   // --- Learning ---
   'learning.admin', // materials, module lessons, progress
+  'learning.progress.read', // follow how learners are doing, without editing content
   'learning.unlock', // reset a learner's test lockout
 
   // --- Work passes, letters, documents ---
@@ -98,9 +102,9 @@ export const CAPABILITIES = [
 
   // --- Governance ---
   'audit.read',
-  'settings.write', // org-wide operational settings        [ADMIN only]
+  'settings.write', // org-wide operational settings
   'statutory.write', // maintain the country rulebook
-  'statutory.verify', // record adviser sign-off             [ADMIN only]
+  'statutory.verify', // record adviser sign-off
   'reversal.perform', // reverse a terminal state (with reason)
 ] as const
 
@@ -114,73 +118,32 @@ export type Capability = (typeof CAPABILITIES)[number]
 const ALL = '*' as const
 
 /**
- * What HR can do. This is the whole capability list minus the four
- * categories HR is deliberately excluded from:
+ * What a manager can do: act on their own team, and look at their own
+ * department.
  *
- *   destructive  people.delete, leave.delete, expense.delete
- *   auth         people.write.role
- *   money out    expense.reimburse, rewards.pay
- *   pay data     payroll.export
- *
- * HR keeps `payroll.read` — they need to see the figures to answer
- * questions — but exporting them is an ADMIN act.
+ * `people.read.department` is deliberately not `people.read.directory` — a
+ * manager sees the people they work with, not the whole company, and never the
+ * identity fields (NRIC, passport, date of birth) that HR needs for statutory
+ * filings. There is no `people.write` here either: a transfer or a title change
+ * is an HR record change even when the manager is the one who decided it.
  */
-const HR_CAPABILITIES: Capability[] = [
-  'people.read.directory',
-  'people.read.identity',
-  'people.write',
-  'people.offboard',
-  'people.reset_password',
-
-  'leave.approve',
-  'leave.admin',
-  'leave.admin.import',
-  'holidays.write',
-  'blackouts.write',
-
-  'time.approve',
-  'time.admin',
-  'payroll.read',
-
-  'expense.approve',
-  'expense.admin',
-  'expense.export',
-
-  'performance.admin',
-  'performance.calibrate',
-  'performance.export',
-
-  'rewards.admin',
-  'rewards.export',
-
-  'learning.admin',
-  'learning.unlock',
-
-  'workpass.read',
-  'workpass.write',
-  'letters.read',
-  'letters.write',
-  'documents.admin',
-
-  'audit.read',
-  'statutory.write',
-  'reversal.perform',
-]
-
-/** Managers approve their own team's submissions and nothing else. */
 const MANAGER_CAPABILITIES: Capability[] = [
-  'people.read.directory',
+  'people.read.department',
   'leave.approve',
   'time.approve',
-  'expense.approve',
+  'learning.progress.read',
+  // Managers are the interviewers, so they read and act on applications for
+  // their own department — see the scoping in src/actions/candidates.ts. They
+  // cannot complete a hire, because that creates an account (`people.write`).
+  'candidates.read',
+  'candidates.write',
 ]
 
 const ROLE_CAPABILITIES: Record<string, readonly Capability[] | readonly [typeof ALL]> = {
-  ADMIN: [ALL],
-  HR: HR_CAPABILITIES,
+  HR: [ALL],
   MANAGER: MANAGER_CAPABILITIES,
-  EMPLOYEE: ['people.read.directory'],
-  CONTRACTOR: [],
+  EMPLOYEE: [],
+  PARTTIME: [],
 }
 
 // ============================================================
@@ -196,3 +159,27 @@ export function can(role: string | null | undefined, capability: Capability): bo
   return (granted as readonly Capability[]).includes(capability)
 }
 
+// ============================================================
+// Roles
+// ============================================================
+
+export const ROLES = ['HR', 'MANAGER', 'EMPLOYEE', 'PARTTIME'] as const
+export type RoleName = (typeof ROLES)[number]
+
+/** Labels for the role picker on the employee forms. */
+export const ROLE_LABELS: Record<RoleName, string> = {
+  HR: 'HR (full access)',
+  MANAGER: 'Manager',
+  EMPLOYEE: 'Employee',
+  PARTTIME: 'Part-time',
+}
+
+/**
+ * Part-timers are identified by their role, and `employmentType` follows it.
+ * Keeping one source of truth means timesheet access and pay treatment cannot
+ * drift apart — which they could when a PART_TIME employment type and an
+ * EMPLOYEE role were set independently.
+ */
+export function isPartTimeRole(role: string | null | undefined): boolean {
+  return role === 'PARTTIME'
+}

@@ -3,6 +3,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { verifySession } from '@/lib/dal'
 import { db } from '@/lib/db'
+import { isRetailLearner } from '@/lib/departments'
 
 export default async function DashboardLayout({
   children,
@@ -12,7 +13,14 @@ export default async function DashboardLayout({
   const session = await verifySession()
   const user = await db.user.findUnique({
     where: { id: session.userId },
-    select: { firstName: true, lastName: true, email: true, employmentType: true },
+    select: {
+      firstName: true,
+      lastName: true,
+      email: true,
+      employmentType: true,
+      role: true,
+      department: true,
+    },
   })
   const directReportsCount = await db.user.count({
     where: { reportingManagerId: session.userId, status: 'ACTIVE' },
@@ -31,9 +39,9 @@ export default async function DashboardLayout({
       <div className="flex min-h-screen w-full">
         <Sidebar
           role={session.role}
-          userId={session.userId}
-          isPartTime={user?.employmentType === 'PART_TIME'}
+          isPartTime={user?.employmentType === 'PART_TIME' || session.role === 'PARTTIME'}
           hasDirectReports={directReportsCount > 0}
+          isRetail={isRetailLearner(user?.department)}
         />
         <div className="flex flex-1 flex-col overflow-hidden">
           <TopBar user={{ name, email: user?.email ?? '', initials }} unreadCount={unreadCount} />

@@ -10,8 +10,7 @@
     "lint": "eslint",
     "db:seed": "tsx -r dotenv/config prisma/seed.ts",
     "db:seed-test": "tsx -r dotenv/config prisma/seed-test.ts",
-    "db:seed-demo": "tsx -r dotenv/config prisma/seed-demo.ts",
-    "letters:placeholder-templates": "tsx -r dotenv/config scripts/make-placeholder-templates.ts"
+    "db:seed-demo": "tsx -r dotenv/config prisma/seed-demo.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

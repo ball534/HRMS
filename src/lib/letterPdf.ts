@@ -1,137 +1,284 @@
 import 'server-only'
 
-import { PDFDocument } from 'pdf-lib'
-import { LETTER_MERGE_FIELDS } from '@/lib/letterTemplate'
+import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
+import type { LetterSection } from '@/lib/letterSections'
 
 /**
- * Letter generation, without Google.
+ * Letter generation.
  *
- * Letters used to be produced through Google Docs: copy a template Doc,
- * `replaceAllText` the `{{placeholders}}` via the Docs API, export the copy to
- * PDF through Drive, then delete the working copy. That made the whole letters
- * workflow depend on a Google service account and a Drive folder.
+ * Two earlier versions of this file are worth knowing about, because the
+ * shortcomings of each are what this one is shaped by:
  *
- * A template is now a **fillable PDF**. HR prepares one per letter type with an
- * AcroForm text field named after each merge field it wants, the app fills those
- * fields with pdf-lib, and then flattens the form so the delivered letter is not
- * an editable document.
+ *   1. Google Docs. Copy a template Doc, `replaceAllText` the placeholders,
+ *      export to PDF. Tied the whole letters flow to a service account.
+ *   2. Fillable PDFs. HR uploaded a template per letter type and the app filled
+ *      its AcroForm boxes. No Google, but the wording could not be edited from
+ *      inside the app, and a value longer than the box someone had drawn was
+ *      silently clipped — form fields do not reflow.
  *
- * The trade-off, stated plainly: PDF form fields are fixed boxes, so long values
- * clip rather than reflow the way they did in a Doc. Keep the fields generously
- * sized — particularly `position`, `department` and `company`.
+ * Now the app draws the letter itself from the sections held on the letter
+ * record: text wraps to the measured width, sections break across pages when
+ * they have to, and the signature blocks are laid out relative to where the
+ * text actually ended rather than at a fixed offset from the bottom of a
+ * template nobody can see.
  */
 
-/**
- * The AcroForm text field names present in a PDF.
- *
- * Used at upload time so the admin screen can tell HR which merge fields their
- * template will actually receive — and, more usefully, which ones it has
- * misspelled and will therefore silently leave blank.
- */
-export async function extractFieldNames(pdfBytes: Buffer): Promise<string[]> {
-  try {
-    const pdf = await PDFDocument.load(pdfBytes)
-    return pdf.getForm().getFields().map(f => f.getName())
-  } catch (err) {
-    console.error('[letterPdf] could not read form fields:', err)
-    return []
-  }
+// A4 portrait, 1" margins.
+const PAGE_WIDTH = 595.28
+const PAGE_HEIGHT = 841.89
+const MARGIN = 72
+const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2
+
+const BODY_SIZE = 10.5
+const BODY_LEADING = 15
+const TITLE_SIZE = 11.5
+const HEADING_SIZE = 18
+
+const INK = rgb(0.1, 0.1, 0.12)
+const MUTED = rgb(0.42, 0.42, 0.45)
+const RULE = rgb(0.8, 0.8, 0.84)
+
+export type LetterPdfInput = {
+  heading: string
+  /** Small line under the heading — the company, or the letter kind. */
+  subheading?: string
+  /** Right-aligned reference line: employee id, date. */
+  reference?: string[]
+  sections: LetterSection[]
+  /** Name printed under the company signature line. */
+  signatoryName?: string
+  signatoryPosition?: string
+  /** Name printed under the employee's signature line. */
+  employeeName: string
+  /** Drawn signatures, as PNG data URLs. */
+  signatorySignatureDataUrl?: string | null
+  employeeSignatureDataUrl?: string | null
 }
 
-export type FillResult = {
-  pdf: Buffer
-  /** Fields filled from the supplied values. */
-  filled: string[]
-  /** Template fields that match no known merge field — almost always a typo. */
-  unknownFields: string[]
-  /** Merge fields the template has no box for. Informational, not an error. */
-  unusedValues: string[]
-}
-
 /**
- * Fill a template's form fields and flatten the result.
- *
- * Missing values are written as an empty string rather than left as an unfilled
- * form box, so a blank NRIC prints as blank rather than showing the field's
- * placeholder text.
+ * Break `text` into lines that fit `maxWidth`, honouring the newlines already
+ * in it. A single word longer than the line (a URL, a long reference number) is
+ * split rather than allowed to run off the page.
  */
-export async function fillLetterTemplate(opts: {
-  templateBytes: Buffer
-  replacements: Record<string, string>
-}): Promise<FillResult> {
-  const pdf = await PDFDocument.load(opts.templateBytes)
-  const form = pdf.getForm()
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  const lines: string[] = []
 
-  const filled: string[] = []
-  const unknownFields: string[] = []
-  const known = new Set<string>(LETTER_MERGE_FIELDS)
-
-  for (const field of form.getFields()) {
-    const name = field.getName()
-
-    if (!known.has(name)) {
-      unknownFields.push(name)
+  for (const paragraph of text.split('\n')) {
+    if (paragraph.trim() === '') {
+      lines.push('')
       continue
     }
 
-    try {
-      form.getTextField(name).setText(opts.replacements[name] ?? '')
-      filled.push(name)
-    } catch {
-      // Field exists but isn't a text field (checkbox, dropdown). Skip it
-      // rather than failing the whole letter.
-      unknownFields.push(name)
+    let line = ''
+    for (const word of paragraph.split(/\s+/)) {
+      const candidate = line ? `${line} ${word}` : word
+      if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+        line = candidate
+        continue
+      }
+
+      if (line) lines.push(line)
+
+      // The word itself doesn't fit — hard-split it.
+      if (font.widthOfTextAtSize(word, size) > maxWidth) {
+        let chunk = ''
+        for (const char of word) {
+          if (font.widthOfTextAtSize(chunk + char, size) > maxWidth) {
+            lines.push(chunk)
+            chunk = char
+          } else {
+            chunk += char
+          }
+        }
+        line = chunk
+      } else {
+        line = word
+      }
+    }
+    lines.push(line)
+  }
+
+  return lines
+}
+
+/** A cursor that adds pages as the text runs past the bottom margin. */
+class Layout {
+  page: PDFPage
+  y: number
+
+  constructor(
+    private pdf: PDFDocument,
+    private font: PDFFont,
+    private bold: PDFFont,
+  ) {
+    this.page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+    this.y = PAGE_HEIGHT - MARGIN
+  }
+
+  /** Room for `height` more points, or start a new page. */
+  private ensure(height: number) {
+    if (this.y - height >= MARGIN) return
+    this.page = this.pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+    this.y = PAGE_HEIGHT - MARGIN
+  }
+
+  gap(points: number) {
+    this.y -= points
+  }
+
+  line(text: string, opts: { size?: number; bold?: boolean; color?: typeof INK; x?: number } = {}) {
+    const size = opts.size ?? BODY_SIZE
+    this.ensure(size + 4)
+    this.page.drawText(text, {
+      x: opts.x ?? MARGIN,
+      y: this.y - size,
+      size,
+      font: opts.bold ? this.bold : this.font,
+      color: opts.color ?? INK,
+    })
+    this.y -= size + 4
+  }
+
+  paragraph(text: string, opts: { size?: number; bold?: boolean; color?: typeof INK } = {}) {
+    const size = opts.size ?? BODY_SIZE
+    const font = opts.bold ? this.bold : this.font
+    for (const line of wrapText(text, font, size, CONTENT_WIDTH)) {
+      this.ensure(BODY_LEADING)
+      if (line !== '') {
+        this.page.drawText(line, {
+          x: MARGIN,
+          y: this.y - size,
+          size,
+          font,
+          color: opts.color ?? INK,
+        })
+      }
+      this.y -= BODY_LEADING
     }
   }
 
-  const unusedValues = LETTER_MERGE_FIELDS.filter(f => !filled.includes(f))
+  rule() {
+    this.ensure(10)
+    this.page.drawLine({
+      start: { x: MARGIN, y: this.y },
+      end: { x: PAGE_WIDTH - MARGIN, y: this.y },
+      thickness: 0.75,
+      color: RULE,
+    })
+    this.y -= 10
+  }
 
-  // Flatten so the delivered PDF is not an editable form.
-  form.flatten()
+  /**
+   * Two signature blocks side by side. Kept together on one page — a signature
+   * line stranded on its own page reads as an unsigned letter.
+   */
+  signatureBlocks(blocks: { label: string; name: string; position?: string; image?: PdfImage | null }[]) {
+    const BLOCK_HEIGHT = 120
+    this.ensure(BLOCK_HEIGHT)
+    const top = this.y
+    const columnWidth = (CONTENT_WIDTH - 40) / 2
 
-  return {
-    pdf: Buffer.from(await pdf.save()),
-    filled,
-    unknownFields,
-    unusedValues,
+    blocks.forEach((block, index) => {
+      const x = MARGIN + index * (columnWidth + 40)
+      let y = top
+
+      this.page.drawText(block.label, { x, y: y - 9, size: 8, font: this.font, color: MUTED })
+      y -= 24
+
+      if (block.image) {
+        const width = Math.min(columnWidth - 10, 170)
+        const scale = width / block.image.width
+        const height = Math.min(block.image.height * scale, 46)
+        this.page.drawImage(block.image.image, { x, y: y - height, width, height })
+      }
+      y -= 52
+
+      this.page.drawLine({
+        start: { x, y },
+        end: { x: x + columnWidth, y },
+        thickness: 0.75,
+        color: RULE,
+      })
+      y -= 14
+
+      this.page.drawText(block.name || '—', { x, y: y - 9, size: 9, font: this.bold, color: INK })
+      y -= 14
+
+      if (block.position) {
+        this.page.drawText(block.position, { x, y: y - 8, size: 8, font: this.font, color: MUTED })
+      }
+    })
+
+    this.y = top - BLOCK_HEIGHT
   }
 }
 
-/**
- * Stamp a drawn signature (PNG data URL) onto the last page.
- *
- * Unchanged in substance from the Google-era implementation — it always worked
- * on PDF bytes with pdf-lib, because Docs can only embed images by public URL.
- * It now takes and returns bytes instead of reading and writing a Drive file.
- */
-export async function stampSignature(opts: {
-  pdfBytes: Buffer
-  signatureDataUrl: string
-}): Promise<Buffer> {
-  const pdfDoc = await PDFDocument.load(opts.pdfBytes)
+type PdfImage = { image: Awaited<ReturnType<PDFDocument['embedPng']>>; width: number; height: number }
 
-  const pngBytes = dataUrlToBuffer(opts.signatureDataUrl)
-  const png = await pdfDoc.embedPng(pngBytes)
-
-  const pages = pdfDoc.getPages()
-  const page = pages[pages.length - 1]
-
-  // Signature box: ~180pt wide, anchored bottom-left of the last page, sitting
-  // above where templates print the signature line.
-  const boxWidth = 180
-  const scale = boxWidth / png.width
-  page.drawImage(png, {
-    x: 72, // 1" left margin
-    y: 90,
-    width: boxWidth,
-    height: Math.min(png.height * scale, 70),
-  })
-
-  return Buffer.from(await pdfDoc.save())
+async function embedSignature(pdf: PDFDocument, dataUrl: string | null | undefined): Promise<PdfImage | null> {
+  if (!dataUrl?.startsWith('data:image')) return null
+  try {
+    const comma = dataUrl.indexOf(',')
+    const bytes = Buffer.from(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl, 'base64')
+    const image = await pdf.embedPng(bytes)
+    return { image, width: image.width, height: image.height }
+  } catch (err) {
+    // A signature that won't embed must not cost us the letter — the record
+    // still holds the data URL, and the audit log still says who signed.
+    console.error('[letterPdf] could not embed signature image:', err)
+    return null
+  }
 }
 
-function dataUrlToBuffer(dataUrl: string): Buffer {
-  const comma = dataUrl.indexOf(',')
-  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
-  return Buffer.from(base64, 'base64')
+/** Draw the letter. Returns the PDF bytes. */
+export async function renderLetterPdf(input: LetterPdfInput): Promise<Buffer> {
+  const pdf = await PDFDocument.create()
+  const font = await pdf.embedFont(StandardFonts.Helvetica)
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
+
+  const [signatoryImage, employeeImage] = await Promise.all([
+    embedSignature(pdf, input.signatorySignatureDataUrl),
+    embedSignature(pdf, input.employeeSignatureDataUrl),
+  ])
+
+  const layout = new Layout(pdf, font, bold)
+
+  // --- Header ---
+  layout.line(input.heading, { size: HEADING_SIZE, bold: true })
+  if (input.subheading) {
+    layout.gap(2)
+    layout.line(input.subheading, { size: 9, color: MUTED })
+  }
+  layout.gap(6)
+  layout.rule()
+  for (const ref of input.reference ?? []) {
+    layout.line(ref, { size: 8.5, color: MUTED })
+  }
+  layout.gap(10)
+
+  // --- Body ---
+  for (const section of input.sections) {
+    layout.gap(8)
+    layout.paragraph(section.title, { size: TITLE_SIZE, bold: true })
+    layout.gap(2)
+    layout.paragraph(section.body)
+  }
+
+  // --- Signatures ---
+  layout.gap(24)
+  layout.signatureBlocks([
+    {
+      label: 'Signed for and on behalf of the Group',
+      name: input.signatoryName ?? '',
+      position: input.signatoryPosition,
+      image: signatoryImage,
+    },
+    {
+      label: 'Accepted by the employee',
+      name: input.employeeName,
+      image: employeeImage,
+    },
+  ])
+
+  return Buffer.from(await pdf.save())
 }

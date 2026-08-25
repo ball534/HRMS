@@ -1,9 +1,10 @@
-import { verifySession } from '@/lib/dal'
+import { requireCapability } from '@/lib/dal'
 import { db } from '@/lib/db'
 import { OrgChart, type OrgNode } from '@/components/people/OrgChart'
 
 export default async function OrgChartPage() {
-  await verifySession()
+  // The whole company's reporting lines. Open to any logged-in user before this.
+  await requireCapability('people.read.directory')
 
   const users = await db.user.findMany({
     where: { status: 'ACTIVE' },

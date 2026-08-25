@@ -84,14 +84,14 @@ async function main() {
       passwordHash,
       firstName: 'Jin',
       lastName: 'Lee',
-      role: 'ADMIN',
+      role: 'HR',
       country: 'SG',
       mustChangePassword: true,
       status: 'ACTIVE',
       employmentType: 'EMPLOYEE',
     },
   })
-  console.log('Created default admin user: jin@company.com (password: test123)')
+  console.log('Created default HR user: jin@company.com (password: test123)')
 
   // Seed holidays
   const sgCount = await seedHolidays('SG', SG_HOLIDAYS_2026)

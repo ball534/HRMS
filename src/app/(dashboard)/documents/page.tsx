@@ -1,10 +1,11 @@
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { db } from '@/lib/db'
 import { DocumentsClient } from './DocumentsClient'
 
 export default async function DocumentsPage() {
   const session = await verifySession()
-  const isHR = session.role === 'ADMIN' || session.role === 'HR'
+  const isHR = can(session.role, 'documents.admin')
 
   let employees: { id: string; firstName: string; lastName: string }[] = []
   if (isHR) {

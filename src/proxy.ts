@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { decrypt } from '@/lib/session'
 
-const PUBLIC_ROUTES = ['/login']
+/**
+ * Routes reachable without a session.
+ *
+ * `/apply` is the job-application form: the people filling it in have no
+ * account, and most of them never will. It creates a Candidate, not a User.
+ */
+const PUBLIC_ROUTES = ['/login', '/apply']
 const CHANGE_PASSWORD_ROUTE = '/change-password'
 
 export async function proxy(request: NextRequest) {
@@ -27,7 +33,7 @@ export async function proxy(request: NextRequest) {
   }
 
   // Valid session exists
-  if (isPublicRoute) {
+  if (pathname === '/login') {
     // Redirect authenticated users away from login
     const dashboardUrl = new URL('/dashboard', request.url)
     return NextResponse.redirect(dashboardUrl)

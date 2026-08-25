@@ -40,7 +40,7 @@ const upsertAllocationSchema = z.object({
 })
 
 // ============================================================
-// createRewardCycle (ADMIN)
+// createRewardCycle (rewards.admin)
 // ============================================================
 
 export async function createRewardCycle(
@@ -91,7 +91,7 @@ export async function createRewardCycle(
 }
 
 // ============================================================
-// transitionRewardCycle (ADMIN)
+// transitionRewardCycle (rewards.admin)
 // DRAFT → APPROVED → PAID → CLOSED
 // ============================================================
 
@@ -113,7 +113,7 @@ export async function transitionRewardCycle(
     }
 
     // Paying bonuses out is a separate capability from administering the
-    // cycle — HR can build and approve a round, releasing the money is ADMIN.
+    // cycle — building and approving a round is separate from paying it out.
     if (to === 'PAID' && !can(session.role, 'rewards.pay')) {
       return { error: 'You do not have permission to mark bonuses as paid.' }
     }
@@ -206,7 +206,7 @@ export async function transitionRewardCycle(
 }
 
 // ============================================================
-// upsertAllocation (ADMIN)
+// upsertAllocation (rewards.admin)
 // ============================================================
 
 export async function upsertAllocation(
@@ -295,7 +295,7 @@ export async function upsertAllocation(
 }
 
 // ============================================================
-// cancelAllocation (ADMIN)
+// cancelAllocation (rewards.admin)
 // ============================================================
 
 export async function cancelAllocation(allocationId: string): Promise<RewardActionState> {

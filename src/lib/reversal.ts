@@ -12,12 +12,11 @@ import type { AuditAction, AuditEntityType } from '@/generated/prisma/client'
  * The same shape recurred in every module: a state you could enter but never
  * leave. A test lockout with no reset anywhere in the product. A review cycle
  * closed a week early by mis-click, with no reopen. A bonus of 50,000 where
- * 5,000 was meant, correctable only by cancelling. A rejected expense that
- * could never be fixed and resubmitted. An accidentally cancelled leave
- * request whose only remedy was an admin hard-delete. A rejected employment
- * letter that could never be re-drafted.
+ * 5,000 was meant, correctable only by cancelling. An accidentally cancelled
+ * leave request whose only remedy was an admin hard-delete. A rejected
+ * employment letter that could never be re-drafted.
  *
- * Rather than six bespoke escape hatches, this is one audited operation:
+ * Rather than a bespoke escape hatch per module, this is one audited operation:
  *
  *   await reverseState({
  *     entityType: 'REVIEW_CYCLE',
@@ -46,7 +45,6 @@ export const MIN_REASON_LENGTH = 10
 
 export type ReversibleEntityType =
   | 'LEAVE'
-  | 'EXPENSE'
   | 'TIME_ENTRY'
   | 'REVIEW_CYCLE'
   | 'PERFORMANCE_REVIEW'
@@ -105,16 +103,6 @@ const SPECS: Record<ReversibleEntityType, EntitySpec> = {
     transitions: [
       { from: 'CANCELLED', to: 'PENDING', label: 'Restore a cancelled request for re-approval' },
       { from: 'REJECTED', to: 'PENDING', label: 'Reopen a rejected request for reconsideration' },
-    ],
-  },
-  EXPENSE: {
-    capability: 'expense.admin',
-    auditAction: 'EXPENSE_REVERSED',
-    auditEntityType: 'EXPENSE',
-    noun: 'expense claim',
-    transitions: [
-      { from: 'REJECTED', to: 'DRAFT', label: 'Return to the employee to correct and resubmit' },
-      { from: 'REIMBURSED', to: 'APPROVED', label: 'Un-mark as paid (e.g. the bank payment bounced)' },
     ],
   },
   TIME_ENTRY: {
@@ -205,16 +193,6 @@ async function loadState(
         include: { leaveType: { select: { name: true } } },
       })
       return r ? { state: r.status, subjectUserId: r.userId, describe: r.leaveType.name } : null
-    }
-    case 'EXPENSE': {
-      const e = await db.expense.findUnique({ where: { id: entityId } })
-      return e
-        ? {
-            state: e.status,
-            subjectUserId: e.userId,
-            describe: `${e.currency} ${Number(e.amount).toFixed(2)} — ${e.merchant}`,
-          }
-        : null
     }
     case 'TIME_ENTRY': {
       const t = await db.timeEntry.findUnique({ where: { id: entityId } })
@@ -313,25 +291,6 @@ async function applyReversal(
           }),
         ])
       }
-      return
-    }
-
-    case 'EXPENSE': {
-      if (to === 'DRAFT') {
-        // Returned for correction: the employee can edit and resubmit, which
-        // was impossible before — only DRAFTs are editable and REJECTED was
-        // terminal.
-        await db.expense.update({
-          where: { id: entityId },
-          data: { status: 'DRAFT', approverId: null, submittedAt: null },
-        })
-        return
-      }
-      // REIMBURSED → APPROVED: the payment didn't land.
-      await db.expense.update({
-        where: { id: entityId },
-        data: { status: 'APPROVED', reimbursedAt: null, reimbursedById: null },
-      })
       return
     }
 

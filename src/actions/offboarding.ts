@@ -19,7 +19,7 @@ import { resolveRules } from '@/lib/statutory'
  *
  *   - their direct reports kept pointing at a user who could no longer log in,
  *     which also broke the org chart for the whole company;
- *   - leave requests, timesheets and expense claims sitting in their approval
+ *   - leave requests and timesheets sitting in their approval
  *     queue were stranded there permanently, with balances still held pending;
  *   - their own pending requests stayed pending forever;
  *   - performance reviews they owned became unactionable, and their own review
@@ -45,7 +45,6 @@ export type OffboardingResult = {
     reportsReassigned: number
     leaveApprovalsReassigned: number
     timesheetApprovalsReassigned: number
-    expenseApprovalsReassigned: number
     ownRequestsCancelled: number
     reviewsReassigned: number
     ownReviewsWaived: number
@@ -60,7 +59,6 @@ export type OffboardingPreview = {
   directReports: number
   pendingLeaveApprovals: number
   pendingTimesheetApprovals: number
-  pendingExpenseApprovals: number
   ownPendingRequests: number
   reviewsAsManager: number
   activePasses: number
@@ -88,7 +86,6 @@ export async function getOffboardingPreview(userId: string): Promise<Offboarding
     directReports,
     pendingLeaveApprovals,
     pendingTimesheetApprovals,
-    pendingExpenseApprovals,
     ownPendingRequests,
     reviewsAsManager,
     activePasses,
@@ -97,7 +94,6 @@ export async function getOffboardingPreview(userId: string): Promise<Offboarding
     db.user.count({ where: { reportingManagerId: userId, status: 'ACTIVE' } }),
     db.leaveRequest.count({ where: { approverId: userId, status: 'PENDING' } }),
     db.timeEntry.count({ where: { approverId: userId, status: 'SUBMITTED' } }),
-    db.expense.count({ where: { approverId: userId, status: 'FOR_APPROVAL' } }),
     db.leaveRequest.count({ where: { userId, status: 'PENDING' } }),
     db.performanceReview.count({
       where: { managerId: userId, status: { not: 'ACKNOWLEDGED' } },
@@ -121,7 +117,6 @@ export async function getOffboardingPreview(userId: string): Promise<Offboarding
     directReports,
     pendingLeaveApprovals,
     pendingTimesheetApprovals,
-    pendingExpenseApprovals,
     ownPendingRequests,
     reviewsAsManager,
     activePasses,
@@ -177,24 +172,21 @@ export async function offboardEmployee(input: {
     // Offboarding yourself locks you out mid-flow and leaves the rest of the
     // steps half-run.
     if (employee.id === session.userId) {
-      return { error: 'You cannot offboard yourself. Ask another admin to do it.' }
+      return { error: 'You cannot offboard yourself. Ask someone else on the HR team to do it.' }
     }
 
-    // Only an ADMIN may offboard an ADMIN — HR must not be able to remove the
-    // people who administer the system.
-    if (employee.role === 'ADMIN' && !can(session.role, 'people.write.role')) {
-      return { error: 'Only an administrator can offboard another administrator' }
-    }
-
-    // Never leave the organisation with no administrator.
-    if (employee.role === 'ADMIN') {
-      const otherAdmins = await db.user.count({
-        where: { role: 'ADMIN', status: 'ACTIVE', id: { not: employee.id } },
+    // Never leave the organisation with nobody holding full access. HR is the
+    // only role that can administer the system, so offboarding the last active
+    // HR user would lock everyone out of hiring, letters, payroll and settings
+    // with no way back in through the app.
+    if (employee.role === 'HR') {
+      const otherHr = await db.user.count({
+        where: { role: 'HR', status: 'ACTIVE', id: { not: employee.id } },
       })
-      if (otherAdmins === 0) {
+      if (otherHr === 0) {
         return {
           error:
-            'This is the only active administrator. Promote someone else to ADMIN before offboarding them.',
+            'This is the only active HR account. Give someone else the HR role before offboarding them.',
         }
       }
     }
@@ -256,17 +248,13 @@ export async function offboardEmployee(input: {
     }
 
     // --- 2. Re-route their approval queue -----------------------------------
-    const [leaveQueue, timeQueue, expenseQueue] = await Promise.all([
+    const [leaveQueue, timeQueue] = await Promise.all([
       db.leaveRequest.findMany({
         where: { approverId: employee.id, status: 'PENDING' },
         select: { id: true },
       }),
       db.timeEntry.findMany({
         where: { approverId: employee.id, status: 'SUBMITTED' },
-        select: { id: true },
-      }),
-      db.expense.findMany({
-        where: { approverId: employee.id, status: 'FOR_APPROVAL' },
         select: { id: true },
       }),
     ])
@@ -283,19 +271,7 @@ export async function offboardEmployee(input: {
         data: { approverId: successorId },
       })
     }
-    if (expenseQueue.length) {
-      await db.expense.updateMany({
-        where: { id: { in: expenseQueue.map(e => e.id) } },
-        data: { approverId: successorId },
-      })
-      // The ExpenseApproval rows are what the approvals screen actually reads.
-      await db.expenseApproval.updateMany({
-        where: { expenseId: { in: expenseQueue.map(e => e.id) }, status: 'PENDING' },
-        data: { approverId: successorId },
-      })
-    }
-
-    const reassignedTotal = leaveQueue.length + timeQueue.length + expenseQueue.length
+    const reassignedTotal = leaveQueue.length + timeQueue.length
     if (reassignedTotal) {
       await createAuditLog({
         userId: session.userId,
@@ -307,15 +283,14 @@ export async function offboardEmployee(input: {
           to: successorId,
           leave: leaveQueue.length,
           timesheets: timeQueue.length,
-          expenses: expenseQueue.length,
         },
       })
       await notify({
         userId: successorId,
         type: 'APPROVAL_REASSIGNED',
         title: `${reassignedTotal} approval(s) reassigned to you`,
-        body: `${employee.firstName} ${employee.lastName} has left. Their pending approvals (${leaveQueue.length} leave, ${timeQueue.length} timesheet, ${expenseQueue.length} expense) are now yours.`,
-        linkUrl: '/approvals',
+        body: `${employee.firstName} ${employee.lastName} has left. Their pending approvals (${leaveQueue.length} leave, ${timeQueue.length} timesheet) are now yours.`,
+        linkUrl: '/dashboard?tab=approvals',
       })
     }
 
@@ -518,7 +493,7 @@ export async function offboardEmployee(input: {
     revalidatePath('/people')
     revalidatePath(`/people/${employee.id}`)
     revalidatePath('/people/org-chart')
-    revalidatePath('/approvals')
+    revalidatePath('/dashboard')
 
     return {
       success: true,
@@ -526,7 +501,6 @@ export async function offboardEmployee(input: {
         reportsReassigned: reports.length,
         leaveApprovalsReassigned: leaveQueue.length,
         timesheetApprovalsReassigned: timeQueue.length,
-        expenseApprovalsReassigned: expenseQueue.length,
         ownRequestsCancelled: ownPending.length,
         reviewsReassigned: reviewsAsManager.length,
         ownReviewsWaived: ownOpenReviews.length,

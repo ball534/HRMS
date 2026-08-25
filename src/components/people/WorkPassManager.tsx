@@ -2,12 +2,26 @@
 
 import { useActionState, useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { upsertWorkPass, deleteWorkPass, type WorkPassActionState } from '@/actions/workPass'
+import {
+  upsertWorkPass,
+  deleteWorkPass,
+  uploadWorkPassDocument,
+  deleteWorkPassDocument,
+  type WorkPassActionState,
+} from '@/actions/workPass'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Trash2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+type PassDocument = {
+  id: string
+  blobId: string
+  fileName: string
+  label: string | null
+  createdAt: string
+}
 
 type WorkPass = {
   id: string
@@ -21,6 +35,7 @@ type WorkPass = {
   expiryDate: string | null
   levy: string | null
   notes: string | null
+  documents?: PassDocument[]
 }
 
 type EmployeePassInfo = {
@@ -33,6 +48,11 @@ type Props = {
   userId: string
   passes: WorkPass[]
   employee: EmployeePassInfo
+  /**
+   * True when the viewer is the employee looking at their own passes. They read
+   * the record and its scans; adding, editing and uploading are HR's.
+   */
+  readOnly?: boolean
 }
 
 const PASS_TYPE_LABEL: Record<string, string> = {
@@ -79,7 +99,7 @@ function expiryPill(d: string | null) {
   return { label: `${days}d left`, cls: 'bg-emerald-50 text-emerald-700' }
 }
 
-export function WorkPassManager({ userId, passes, employee }: Props) {
+export function WorkPassManager({ userId, passes, employee, readOnly = false }: Props) {
   const router = useRouter()
   const [state, formAction, isPending] = useActionState(upsertWorkPass, initialState)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -111,15 +131,16 @@ export function WorkPassManager({ userId, passes, employee }: Props) {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Work passes
         </h2>
-        {!showAdd && !editingId && (
+        {!readOnly && !showAdd && !editingId && (
           <Button size="sm" variant="outline" onClick={() => setShowAdd(true)}>
             + Add pass
           </Button>
         )}
       </div>
       <p className="mb-4 text-xs text-muted-foreground">
-        Track foreign-worker permits, S Pass, Employment Pass etc. HR is reminded ahead of expiry —
-        4 months for Employment Pass / S Pass, 2 months for Work Permit.
+        {readOnly
+          ? 'Your work pass as recorded by HR, with any scans they have filed. Get in touch with HR if anything here is wrong.'
+          : 'Track foreign-worker permits, S Pass, Employment Pass etc. HR is reminded ahead of expiry — 4 months for Employment Pass / S Pass, 2 months for Work Permit.'}
       </p>
 
       {/* Pulled from the employee record */}
@@ -188,7 +209,8 @@ export function WorkPassManager({ userId, passes, employee }: Props) {
                     </div>
                     {p.notes && <p className="text-xs text-muted-foreground">{p.notes}</p>}
                   </div>
-                  <div className="flex shrink-0 gap-1">
+
+                  <div className={cn('flex shrink-0 gap-1', readOnly && 'hidden')}>
                     <button
                       onClick={() => {
                         setEditingId(p.id)
@@ -209,12 +231,140 @@ export function WorkPassManager({ userId, passes, employee }: Props) {
                     </button>
                   </div>
                 </div>
+
+                <PassDocuments passId={p.id} documents={p.documents ?? []} readOnly={readOnly} />
               </li>
             )
           })}
         </ul>
       )}
     </section>
+  )
+}
+
+/**
+ * The scans filed against a pass: the card itself, the in-principle approval, a
+ * renewal letter. HR uploads; the employee reads their own and uploads nothing.
+ */
+function PassDocuments({
+  passId,
+  documents,
+  readOnly,
+}: {
+  passId: string
+  documents: PassDocument[]
+  readOnly: boolean
+}) {
+  const router = useRouter()
+  const [state, formAction, isPending] = useActionState(uploadWorkPassDocument, initialState)
+  const [askedToAdd, setAskedToAdd] = useState(false)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const [, startTransition] = useTransition()
+
+  // Derived rather than closed by an effect: a successful upload closes the
+  // form because the form is only open while there is no success to show.
+  const adding = askedToAdd && !state.success
+
+  useEffect(() => {
+    if (state.success) router.refresh()
+  }, [state.success, router])
+
+  function handleRemove(id: string) {
+    setRemovingId(id)
+    startTransition(async () => {
+      await deleteWorkPassDocument(id)
+      setRemovingId(null)
+      router.refresh()
+    })
+  }
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground">
+          Attachments {documents.length > 0 && `(${documents.length})`}
+        </p>
+        {!readOnly && !adding && (
+          <Button size="sm" variant="ghost" onClick={() => setAskedToAdd(true)}>
+            <Upload className="mr-1 h-3.5 w-3.5" /> Upload
+          </Button>
+        )}
+      </div>
+
+      {documents.length === 0 ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {readOnly
+            ? 'No scans have been filed against this pass.'
+            : 'Nothing attached yet — upload the pass card or approval letter.'}
+        </p>
+      ) : (
+        <ul className="mt-2 space-y-1">
+          {documents.map(doc => (
+            <li key={doc.id} className="flex items-center justify-between gap-2 text-xs">
+              <a
+                href={`/api/files/${doc.blobId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate text-primary hover:underline"
+              >
+                {doc.label ? `${doc.label} — ` : ''}
+                {doc.fileName}
+              </a>
+              {!readOnly && (
+                <button
+                  onClick={() => handleRemove(doc.id)}
+                  disabled={removingId === doc.id}
+                  className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                  aria-label={`Delete ${doc.fileName}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {adding && !readOnly && (
+        <form action={formAction} className="mt-3 space-y-2 rounded-lg border border-border p-3">
+          <input type="hidden" name="passId" value={passId} />
+          <div>
+            <Label htmlFor={`label-${passId}`} className="text-xs">
+              What is it?
+            </Label>
+            <Input
+              id={`label-${passId}`}
+              name="label"
+              placeholder="e.g. Pass card (front)"
+              className="mt-1 h-8 text-sm"
+            />
+          </div>
+          <div>
+            <Label htmlFor={`file-${passId}`} className="text-xs">
+              File (PDF or image)
+            </Label>
+            <Input
+              id={`file-${passId}`}
+              name="file"
+              type="file"
+              accept="application/pdf,image/png,image/jpeg,image/webp"
+              required
+              className="mt-1 h-8 text-sm file:mr-2 file:rounded file:border-0 file:bg-muted file:px-2 file:text-xs"
+            />
+            {state.errors?.file && <p className="mt-0.5 text-xs text-rose-600">{state.errors.file[0]}</p>}
+          </div>
+          {state.error && <p className="text-xs text-rose-600">{state.error}</p>}
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" disabled={isPending}>
+              {isPending ? 'Uploading…' : 'Upload'}
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setAskedToAdd(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+    </div>
   )
 }
 

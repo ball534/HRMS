@@ -134,7 +134,7 @@ export async function notifyMany(
  */
 export async function notifyHr(input: Omit<NotifyInput, 'userId'>): Promise<void> {
   const hr = await db.user.findMany({
-    where: { status: 'ACTIVE', role: { in: ['ADMIN', 'HR'] } },
+    where: { status: 'ACTIVE', role: 'HR' },
     select: { id: true },
   })
   await notifyMany(

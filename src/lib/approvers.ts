@@ -8,11 +8,10 @@ import { getSetting } from '@/lib/settings'
  *
  * Two problems this module fixes.
  *
- * **Self-approval was possible everywhere.** An ADMIN or HR user could approve
- * their own leave, approve *and* reimburse their own expense claim, approve
- * their own timesheet, propose and approve their own bonus, and — where an
- * employee had no reporting manager — become their own performance reviewer.
- * No module had a "not your own record" guard.
+ * **Self-approval was possible everywhere.** A full-access user could approve
+ * their own leave, approve their own timesheet, propose and approve their own
+ * bonus, and — where an employee had no reporting manager — become their own
+ * performance reviewer. No module had a "not your own record" guard.
  *
  * **Employees with no manager were stuck.** Leave submission hard-failed with
  * "contact your administrator", and timesheet submission set `approverId: null`
@@ -64,7 +63,7 @@ export async function assertNotSelf(
 export type ApproverResolution = {
   approverId: string
   /** Where the approver came from — surfaced in the UI so routing isn't a mystery. */
-  source: 'manager' | 'fallback_setting' | 'admin' | 'hr'
+  source: 'manager' | 'fallback_setting' | 'hr'
 }
 
 /**
@@ -74,8 +73,7 @@ export type ApproverResolution = {
  * Order:
  *   1. their reporting manager (if active, and not themselves)
  *   2. the configured fallback approver (Settings → Approvals)
- *   3. any other active ADMIN
- *   4. any other active HR user
+ *   3. any other active HR user
  *
  * Throws `NoApproverError` only when the organisation genuinely has nobody
  * else who could act — which in practice means a single-user database.
@@ -111,18 +109,14 @@ export async function resolveApprover(employeeId: string): Promise<ApproverResol
     }
   }
 
-  // 3. Any other active ADMIN, then 4. any other active HR user.
-  for (const [role, source] of [
-    ['ADMIN', 'admin'],
-    ['HR', 'hr'],
-  ] as const) {
-    const candidate = await db.user.findFirst({
-      where: { role, status: 'ACTIVE', id: { not: employee.id } },
-      select: { id: true },
-      orderBy: { createdAt: 'asc' },
-    })
-    if (candidate) return { approverId: candidate.id, source }
-  }
+  // 3. Any other active HR user. (This step used to try ADMIN first and HR
+  //    second; the two roles are now one.)
+  const hrUser = await db.user.findFirst({
+    where: { role: 'HR', status: 'ACTIVE', id: { not: employee.id } },
+    select: { id: true },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (hrUser) return { approverId: hrUser.id, source: 'hr' }
 
   throw new NoApproverError(
     `No one is available to approve for ${employee.firstName} ${employee.lastName}. ` +

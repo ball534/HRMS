@@ -1,4 +1,8 @@
+import { redirect } from 'next/navigation'
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
+import { db } from '@/lib/db'
+import { isRetailLearner } from '@/lib/departments'
 import { logout } from '@/actions/auth'
 import { getLearningSeed, saveLearningProgress } from '@/actions/learning'
 import LearningApp from '@/components/learning/LearningApp'
@@ -7,8 +11,23 @@ export const metadata = {
   title: 'iORA Learning Hub',
 }
 
+/**
+ * The Learning Hub is retail training: the onboarding course teaches shop-floor
+ * work, and it was previously open to everyone with a login, which put a course
+ * about serving customers in front of the finance and design teams. Retail staff
+ * see it; HR reaches it to maintain the content.
+ */
 export default async function LearningPage() {
   const session = await verifySession()
+
+  const me = await db.user.findUnique({
+    where: { id: session.userId },
+    select: { department: true },
+  })
+  if (!isRetailLearner(me?.department) && !can(session.role, 'learning.admin')) {
+    redirect('/dashboard')
+  }
+
   const seed = await getLearningSeed()
 
   return (

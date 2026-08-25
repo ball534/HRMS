@@ -6,6 +6,7 @@ import { Search, Users, GitBranch } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { can } from '@/lib/permissions'
 
 type User = {
   id: string
@@ -211,18 +212,20 @@ export function PeopleTable({ userRole }: Props) {
             Show terminated
           </label>
 
-          {/* Org chart button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => router.push('/people/org-chart')}
-          >
-            <GitBranch className="h-4 w-4" />
-            Org Chart
-          </Button>
+          {/* Org chart — the whole company's reporting lines, so HR only */}
+          {can(userRole, 'people.read.directory') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.push('/people/org-chart')}
+            >
+              <GitBranch className="h-4 w-4" />
+              Org Chart
+            </Button>
+          )}
 
           {/* Add Employee (admin only) */}
-          {userRole === 'ADMIN' && (
+          {can(userRole, 'people.write') && (
             <Button size="sm" onClick={() => router.push('/people/new')}>
               <Users className="h-4 w-4" />
               Add Employee

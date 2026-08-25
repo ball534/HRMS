@@ -3,8 +3,9 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
-import { requireCapability } from '@/lib/dal'
+import { requireCapability, verifySession } from '@/lib/dal'
 import { createAuditLog } from '@/lib/audit'
+import { storage, putChecked, FileTooLargeError } from '@/lib/storage'
 import { PASS_USER_SELECT, daysUntil, getLeadDaysConfig, reminderLeadDays } from '@/lib/workPasses'
 
 export type WorkPassActionState = {
@@ -189,4 +190,124 @@ export async function getUserWorkPasses(userId: string) {
     where: { userId },
     orderBy: { createdAt: 'desc' },
   })
+}
+
+/**
+ * A user's own work passes, with their attachments. No capability needed —
+ * authorization is "this is you", which is what lets an employee see their own
+ * pass and its scans without being able to see anyone else's.
+ */
+export async function getMyWorkPasses() {
+  const session = await verifySession()
+  return db.workPass.findMany({
+    where: { userId: session.userId },
+    include: {
+      documents: {
+        select: { id: true, blobId: true, fileName: true, label: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+}
+
+// ============================================================
+// Attachments — the scans that prove a pass exists
+// ============================================================
+
+const ATTACHMENT_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
+
+/**
+ * Attach a scan to a work pass. HR only, deliberately: a work pass is a record
+ * the company is answerable for, and letting employees upload their own would
+ * make "is this the document MOM issued?" unanswerable.
+ */
+export async function uploadWorkPassDocument(
+  _state: WorkPassActionState,
+  formData: FormData,
+): Promise<WorkPassActionState> {
+  try {
+    const session = await requireCapability('workpass.write')
+
+    const passId = String(formData.get('passId') ?? '')
+    const label = String(formData.get('label') ?? '').trim()
+    const file = formData.get('file')
+
+    const pass = await db.workPass.findUnique({
+      where: { id: passId },
+      select: { id: true, userId: true },
+    })
+    if (!pass) return { error: 'Work pass not found.' }
+
+    if (!(file instanceof File) || file.size === 0) {
+      return { errors: { file: ['Choose a file to upload.'] } }
+    }
+    if (!ATTACHMENT_TYPES.includes(file.type)) {
+      return { errors: { file: ['Upload a PDF or an image.'] } }
+    }
+
+    let stored
+    try {
+      stored = await putChecked(Buffer.from(await file.arrayBuffer()), file.type)
+    } catch (err) {
+      if (err instanceof FileTooLargeError) return { errors: { file: [err.message] } }
+      throw err
+    }
+
+    const created = await db.workPassDocument.create({
+      data: {
+        workPassId: pass.id,
+        blobId: stored.blobId,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        label: label || null,
+        uploadedById: session.userId,
+      },
+      select: { id: true },
+    })
+
+    await createAuditLog({
+      userId: session.userId,
+      action: 'WORK_PASS_DOC_UPLOADED',
+      entityType: 'WORK_PASS',
+      entityId: pass.id,
+      details: { documentId: created.id, label: label || null, fileName: file.name },
+    })
+
+    revalidatePath(`/people/${pass.userId}`)
+    return { success: true }
+  } catch (err) {
+    console.error('uploadWorkPassDocument error:', err)
+    return { error: 'Failed to upload the file.' }
+  }
+}
+
+export async function deleteWorkPassDocument(documentId: string): Promise<WorkPassActionState> {
+  try {
+    const session = await requireCapability('workpass.write')
+    const doc = await db.workPassDocument.findUnique({
+      where: { id: documentId },
+      select: { id: true, blobId: true, workPass: { select: { id: true, userId: true } } },
+    })
+    if (!doc) return { error: 'File not found.' }
+
+    await db.workPassDocument.delete({ where: { id: documentId } })
+    // Give up this record's reference; the bytes go when nothing else holds one.
+    await storage.release(doc.blobId)
+
+    await createAuditLog({
+      userId: session.userId,
+      action: 'WORK_PASS_DOC_DELETED',
+      entityType: 'WORK_PASS',
+      entityId: doc.workPass.id,
+      details: { documentId },
+    })
+
+    revalidatePath(`/people/${doc.workPass.userId}`)
+    return { success: true }
+  } catch (err) {
+    console.error('deleteWorkPassDocument error:', err)
+    return { error: 'Failed to delete the file.' }
+  }
 }

@@ -285,7 +285,7 @@ export async function submitLeaveRequest(
       type: 'LEAVE_SUBMITTED',
       title: `Leave request from ${requester?.firstName} ${requester?.lastName}`,
       body: `${leaveType.name} · ${fmtRange(startDate, endDate)} · ${daysCount} day(s). Waiting for your approval.`,
-      linkUrl: '/approvals',
+      linkUrl: '/dashboard?tab=approvals',
     })
 
     return { success: true }
@@ -562,7 +562,7 @@ export async function cancelLeave(
         type: 'LEAVE_CANCELLED',
         title: 'A leave request in your queue was cancelled',
         body: `${request.leaveType.name} · ${fmtRange(request.startDate, request.endDate)} — no action needed.`,
-        linkUrl: '/approvals',
+        linkUrl: '/dashboard?tab=approvals',
       })
     }
     if (session.userId !== request.userId) {
@@ -705,12 +705,11 @@ export async function getAttachmentUrl(requestId: string) {
     },
   })
 
-  // Auth: own request, approver, or HR/admin
+  // Auth: own request, its approver, or HR
   const isAuthorised =
     session.userId === request.userId ||
     session.userId === request.approverId ||
-    session.role === 'ADMIN' ||
-    session.role === 'HR'
+    can(session.role, 'leave.admin')
 
   if (!isAuthorised) {
     return null

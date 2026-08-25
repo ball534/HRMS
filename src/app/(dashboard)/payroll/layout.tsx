@@ -1,4 +1,5 @@
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { db } from '@/lib/db'
 import { TimeTabs } from '@/components/time/TimeTabs'
 
@@ -17,7 +18,7 @@ export default async function PayrollLayout({ children }: { children: React.Reac
       <TimeTabs
         isPartTime={me?.employmentType === 'PART_TIME'}
         hasTeam={directReportsCount > 0}
-        isAdmin={session.role === 'ADMIN'}
+        isAdmin={can(session.role, 'time.admin')}
       />
       {children}
     </div>

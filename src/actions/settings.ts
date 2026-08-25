@@ -20,7 +20,7 @@ export type SettingRow = {
   label: string
   description: string
   group: string
-  kind: 'number' | 'boolean' | 'user'
+  kind: 'number' | 'boolean' | 'user' | 'user-per-department'
   value: unknown
   isDefault: boolean
   updatedByName: string | null
@@ -32,8 +32,9 @@ export type SettingRow = {
  * default's type, with the one user-reference setting special-cased so it gets
  * a person picker rather than a free-text uuid box.
  */
-function kindFor(key: SettingKey): 'number' | 'boolean' | 'user' {
+function kindFor(key: SettingKey): SettingRow['kind'] {
   if (key === 'leave.fallbackApproverId') return 'user'
+  if (key === 'letters.departmentSignatories') return 'user-per-department'
   const d = SETTING_DEFS[key].default
   if (typeof d === 'boolean') return 'boolean'
   return 'number'
@@ -58,7 +59,7 @@ export async function getSettingsForAdmin(): Promise<{
         })
       : Promise.resolve([]),
     db.user.findMany({
-      where: { status: 'ACTIVE', role: { in: ['ADMIN', 'HR'] } },
+      where: { status: 'ACTIVE', role: { in: ['HR', 'MANAGER'] } },
       select: { id: true, firstName: true, lastName: true, role: true },
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
     }),

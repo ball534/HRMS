@@ -2,6 +2,7 @@
 
 import { db } from '@/lib/db'
 import { verifySession, requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
 import { storage } from '@/lib/storage'
 
@@ -47,7 +48,7 @@ const VALID_CATEGORIES: DocumentCategory[] = [
 ]
 
 function isHRRole(role: string): boolean {
-  return role === 'ADMIN' || role === 'HR'
+  return can(role, 'documents.admin')
 }
 
 // ============================================================

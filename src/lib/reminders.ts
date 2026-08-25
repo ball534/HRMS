@@ -38,7 +38,7 @@ function fmt(d: Date | null): string {
 
 async function getHrEmails(): Promise<string[]> {
   const hr = await db.user.findMany({
-    where: { role: { in: ['HR', 'ADMIN'] }, status: 'ACTIVE' },
+    where: { role: 'HR', status: 'ACTIVE' },
     select: { email: true },
   })
   return hr.map(h => h.email)

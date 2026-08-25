@@ -71,6 +71,12 @@ type User = {
   confirmationDate?: string | null
   reportingManagerId?: string | null
   role: string
+  citizenship?: string | null
+  hourlyRate?: string | null
+  hourlyRateWeekday?: string | null
+  hourlyRateSaturday?: string | null
+  hourlyRateSundayPh?: string | null
+  hourlyRateWeekend?: string | null
   status: 'ACTIVE' | 'INACTIVE' | 'TERMINATED' | 'REJECTED'
   terminatedAt?: string | null
   folderArchivedAt?: string | null

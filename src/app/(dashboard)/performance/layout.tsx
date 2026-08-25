@@ -1,4 +1,5 @@
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { db } from '@/lib/db'
 import { PerformanceTabs } from '@/components/performance/PerformanceTabs'
 
@@ -8,7 +9,7 @@ export default async function PerformanceLayout({
   children: React.ReactNode
 }) {
   const session = await verifySession()
-  const isAdmin = session.role === 'ADMIN'
+  const isAdmin = can(session.role, 'performance.admin')
   const directReportsCount = await db.user.count({
     where: { reportingManagerId: session.userId, status: 'ACTIVE' },
   })

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import bcrypt from 'bcryptjs'
 import { db } from '@/lib/db'
 import { verifySession, requireCapability } from '@/lib/dal'
+import { can, ROLES } from '@/lib/permissions'
 import { createAuditLog } from '@/lib/audit'
 
 const CreateUserSchema = z.object({
@@ -14,15 +15,34 @@ const CreateUserSchema = z.object({
   nationality: z.string().optional(),
   position: z.string().min(1, 'Position is required'),
   department: z.string().min(1, 'Department is required'),
-  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR', 'PART_TIME']),
+  employmentType: z.enum(['EMPLOYEE', 'CONTRACTOR']),
   country: z.enum(['SG', 'MY']),
   startDate: z.string().optional(),
   reportingManagerId: z.string().optional(),
-  role: z.enum(['ADMIN', 'HR', 'MANAGER', 'EMPLOYEE', 'CONTRACTOR']),
+  role: z.enum(ROLES),
 })
 
+/**
+ * The people directory.
+ *
+ * This used to require nothing but a session, which made the whole staff list —
+ * names, emails, phone numbers, reporting lines — readable by anyone logged in,
+ * including through a hand-made request that ignored whatever the UI showed.
+ * Now HR reads everyone, a manager reads their own department and nobody else
+ * reads anything.
+ */
 export async function GET(request: NextRequest) {
-  await verifySession()
+  const session = await verifySession()
+
+  const seesEveryone = can(session.role, 'people.read.directory')
+  const seesOwnDepartment = can(session.role, 'people.read.department')
+
+  if (!seesEveryone && !seesOwnDepartment) {
+    return NextResponse.json(
+      { error: 'You do not have permission to browse the employee directory' },
+      { status: 403 },
+    )
+  }
 
   const { searchParams } = new URL(request.url)
   const search = searchParams.get('search') ?? ''
@@ -42,6 +62,20 @@ export async function GET(request: NextRequest) {
 
   if (department) {
     where.department = { equals: department, mode: 'insensitive' }
+  }
+
+  // A manager's scope is their own department, whatever the query string asks
+  // for. Applied last so it overrides the filter above rather than sitting
+  // alongside it.
+  if (!seesEveryone) {
+    const me = await db.user.findUnique({
+      where: { id: session.userId },
+      select: { department: true },
+    })
+    if (!me?.department) {
+      return NextResponse.json({ users: [] })
+    }
+    where.department = { equals: me.department, mode: 'insensitive' }
   }
 
   if (country) {
@@ -118,7 +152,7 @@ export async function POST(request: NextRequest) {
       nationality: data.nationality,
       position: data.position,
       department: data.department,
-      employmentType: data.employmentType,
+      employmentType: data.role === 'PARTTIME' ? 'PART_TIME' : data.employmentType,
       country: data.country,
       startDate: data.startDate ? new Date(data.startDate) : undefined,
       reportingManagerId: data.reportingManagerId || undefined,

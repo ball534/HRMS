@@ -70,7 +70,7 @@ export function OffboardDialog({ userId, employeeName }: { userId: string; emplo
       const s = res.summary!
       toast.success(
         `${employeeName} offboarded. ${s.reportsReassigned} report(s) and ` +
-          `${s.leaveApprovalsReassigned + s.timesheetApprovalsReassigned + s.expenseApprovalsReassigned} approval(s) ` +
+          `${s.leaveApprovalsReassigned + s.timesheetApprovalsReassigned} approval(s) ` +
           `moved to ${s.successorName}.`,
       )
       setOpen(false)
@@ -79,7 +79,7 @@ export function OffboardDialog({ userId, employeeName }: { userId: string; emplo
   }
 
   const totalApprovals = preview
-    ? preview.pendingLeaveApprovals + preview.pendingTimesheetApprovals + preview.pendingExpenseApprovals
+    ? preview.pendingLeaveApprovals + preview.pendingTimesheetApprovals
     : 0
 
   return (
@@ -110,8 +110,7 @@ export function OffboardDialog({ userId, employeeName }: { userId: string; emplo
                   <li>{preview.directReports} direct report(s) reassigned</li>
                   <li>
                     {totalApprovals} pending approval(s) re-routed ({preview.pendingLeaveApprovals}{' '}
-                    leave, {preview.pendingTimesheetApprovals} timesheet,{' '}
-                    {preview.pendingExpenseApprovals} expense)
+                    leave, {preview.pendingTimesheetApprovals} timesheet)
                   </li>
                   <li>{preview.ownPendingRequests} of their own pending request(s) cancelled</li>
                   <li>{preview.reviewsAsManager} performance review(s) they own reassigned</li>

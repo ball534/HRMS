@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { db } from '@/lib/db'
 import { getSession } from '@/lib/session'
 import { requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { notify, notifyHr } from '@/lib/notify'
 
 // ============================================================
@@ -111,7 +112,7 @@ export async function getLearningSeed(): Promise<LearningSeed | null> {
 
   return {
     userName: user ? `${user.firstName} ${user.lastName}` : 'Learner',
-    role: user?.role === 'ADMIN' ? 'admin' : 'user',
+    role: can(user?.role, 'learning.admin') ? 'admin' : 'user',
     enrolledAt: (user?.startDate ?? user?.createdAt ?? new Date()).getTime(),
     progress,
     tests: testsMap,
@@ -406,11 +407,36 @@ export type LearnerRow = {
   certified: boolean
 }
 
+/**
+ * Every learner's progress.
+ *
+ * Two audiences: HR, who see everyone and maintain the content, and a manager
+ * following their own team. A manager holds `learning.progress.read` but not
+ * `learning.admin`, so this used to reject them outright — which meant the
+ * "Learning Progress" entry in their sidebar led to a redirect. They now get
+ * their own department, and only the retail staff in it, since the course is
+ * retail training.
+ */
 export async function getAllLearningProgress(): Promise<LearnerRow[]> {
-  await requireCapability('learning.admin')
+  const session = await requireCapability('learning.progress.read')
+
+  let departmentScope: string | undefined
+  if (!can(session.role, 'learning.admin')) {
+    const me = await db.user.findUnique({
+      where: { id: session.userId },
+      select: { department: true },
+    })
+    // No department on the record means no team to report on — better an empty
+    // table than the whole company's progress.
+    if (!me?.department) return []
+    departmentScope = me.department
+  }
 
   const users = await db.user.findMany({
-    where: { status: 'ACTIVE' },
+    where: {
+      status: 'ACTIVE',
+      ...(departmentScope ? { department: departmentScope } : {}),
+    },
     orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
     select: {
       id: true,

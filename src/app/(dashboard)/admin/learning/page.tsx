@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { requireCapability } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import {
   getAllLearningProgress,
   listLearningMaterials,
@@ -47,10 +48,13 @@ function TestCell({
   cell,
   userId,
   testId,
+  canUnlock,
 }: {
   cell: LearnerRow['tests'][string]
   userId: string
   testId: string
+  /** Resetting a lockout is HR's — a manager sees the lockout and reports it. */
+  canUnlock: boolean
 }) {
   if (cell.passed) {
     return (
@@ -58,6 +62,7 @@ function TestCell({
     )
   }
   if (cell.locked) {
+    if (!canUnlock) return <Badge variant="destructive">Locked</Badge>
     // The lockout message shown to learners has always told them "contact HR,
     // who can reset your access" — this button is what finally makes that true.
     return (
@@ -81,12 +86,24 @@ function TestCell({
   return <span className="text-muted-foreground">—</span>
 }
 
+/**
+ * Learning progress, and — for HR — the course content behind it.
+ *
+ * A manager reaches this page too: they hold `learning.progress.read` and see
+ * their own department's progress (the scoping lives in
+ * `getAllLearningProgress`). What they do not get is the content managers or the
+ * lockout reset, both of which are `learning.admin`. Before this the page
+ * required `learning.admin` outright, so a manager following the sidebar entry
+ * was bounced to the dashboard with no explanation.
+ */
 export default async function AdminLearningPage() {
-  await requireCapability('learning.admin')
+  const session = await requireCapability('learning.progress.read')
+  const isContentAdmin = can(session.role, 'learning.admin')
+
   const [rows, materials, moduleLessons] = await Promise.all([
     getAllLearningProgress(),
-    listLearningMaterials(),
-    listModuleLessons(),
+    isContentAdmin ? listLearningMaterials() : Promise.resolve([]),
+    isContentAdmin ? listModuleLessons() : Promise.resolve([]),
   ])
 
   const started = rows.filter((r) => r.overallPct > 0)
@@ -97,8 +114,9 @@ export default async function AdminLearningPage() {
       <div>
         <h1 className="text-2xl font-semibold">Learning Progress</h1>
         <p className="text-sm text-muted-foreground">
-          Onboarding journey progress across the team, synced from the iORA
-          Learning Hub.
+          {isContentAdmin
+            ? 'Onboarding journey progress across the Group, synced from the iORA Learning Hub.'
+            : 'Onboarding journey progress for your department, synced from the iORA Learning Hub.'}
         </p>
       </div>
 
@@ -189,7 +207,12 @@ export default async function AdminLearningPage() {
                     ))}
                     {TEST_IDS.map((id) => (
                       <TableCell key={id} className="text-center">
-                        <TestCell cell={r.tests[id]} userId={r.userId} testId={id} />
+                        <TestCell
+                          cell={r.tests[id]}
+                          userId={r.userId}
+                          testId={id}
+                          canUnlock={isContentAdmin}
+                        />
                       </TableCell>
                     ))}
                     <TableCell className="text-center font-medium">
@@ -210,7 +233,9 @@ export default async function AdminLearningPage() {
                       colSpan={9}
                       className="text-center text-muted-foreground"
                     >
-                      No employees found.
+                      {isContentAdmin
+                        ? 'No employees found.'
+                        : 'Nobody in your department is enrolled in the onboarding course.'}
                     </TableCell>
                   </TableRow>
                 )}
@@ -220,12 +245,16 @@ export default async function AdminLearningPage() {
         </CardContent>
       </Card>
 
-      <LearningContentManager initial={materials} />
+      {isContentAdmin && (
+        <>
+          <LearningContentManager initial={materials} />
 
-      <ModuleLessonManager
-        initialLessons={moduleLessons}
-        initialMaterials={materials}
-      />
+          <ModuleLessonManager
+            initialLessons={moduleLessons}
+            initialMaterials={materials}
+          />
+        </>
+      )}
     </div>
   )
 }

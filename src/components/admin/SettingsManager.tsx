@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { setOrgSetting, type SettingRow } from '@/actions/settings'
+import { DEPARTMENTS } from '@/lib/departments'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -40,9 +41,21 @@ export function SettingsManager({ rows, approverOptions }: Props) {
           <div className="divide-y divide-border">
             {rows
               .filter(r => r.group === group)
-              .map(row => (
-                <SettingField key={row.key} row={row} approverOptions={approverOptions} />
-              ))}
+              .map(row =>
+                // The one setting that is a map rather than a scalar gets its
+                // own control: a signatory picker per department. Chosen here
+                // rather than inside SettingField so neither component ends up
+                // calling hooks conditionally.
+                row.kind === 'user-per-department' ? (
+                  <DepartmentSignatoryField
+                    key={row.key}
+                    row={row}
+                    approverOptions={approverOptions}
+                  />
+                ) : (
+                  <SettingField key={row.key} row={row} approverOptions={approverOptions} />
+                ),
+              )}
           </div>
         </div>
       ))}
@@ -173,6 +186,82 @@ function SettingField({ row, approverOptions }: { row: SettingRow; approverOptio
             </Button>
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Default signatory per department.
+ *
+ * Saves the whole map on every change rather than one department at a time —
+ * the setting is a single row, and a partial write would drop the other eight
+ * departments.
+ */
+function DepartmentSignatoryField({
+  row,
+  approverOptions,
+}: {
+  row: SettingRow
+  approverOptions: Props['approverOptions']
+}) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const stored = (row.value ?? {}) as Record<string, string | null>
+  const [map, setMap] = useState<Record<string, string | null>>(stored)
+
+  function saveDepartment(department: string, userId: string) {
+    const next = { ...map, [department]: userId === '' ? null : userId }
+    setMap(next)
+
+    startTransition(async () => {
+      const res = await setOrgSetting(row.key, next)
+      if (res.error) {
+        toast.error(res.error)
+        setMap(stored)
+        return
+      }
+      toast.success(`Signatory for ${department} saved`)
+      router.refresh()
+    })
+  }
+
+  return (
+    <div className="px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Label className="text-sm font-medium">{row.label}</Label>
+        {row.isDefault && (
+          <Badge variant="outline" className="text-[10px]">
+            default
+          </Badge>
+        )}
+      </div>
+      <p className="mt-1 max-w-xl text-xs text-muted-foreground">{row.description}</p>
+      {!row.isDefault && row.updatedByName && (
+        <p className="mt-1 text-[11px] text-muted-foreground/80">
+          Changed by {row.updatedByName} · {fmtWhen(row.updatedAt)}
+        </p>
+      )}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {DEPARTMENTS.map(department => (
+          <label key={department} className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+            <span className="text-xs font-medium">{department}</span>
+            <select
+              className="h-8 min-w-40 rounded-md border border-input bg-background px-2 text-xs"
+              value={map[department] ?? ''}
+              disabled={isPending}
+              onChange={e => saveDepartment(department, e.target.value)}
+            >
+              <option value="">— none —</option>
+              {approverOptions.map(o => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
       </div>
     </div>
   )

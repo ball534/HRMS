@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { verifySession } from '@/lib/dal'
+import { can } from '@/lib/permissions'
 import { db } from '@/lib/db'
 import { getAttachmentUrl } from '@/actions/leave'
 import { buttonVariants } from '@/components/ui/button-variants'
@@ -51,7 +52,7 @@ export default async function LeaveDetailPage({ params }: Props) {
 
   const isOwner = session.userId === request.userId
   const isApprover = session.userId === request.approverId
-  const isAdmin = session.role === 'ADMIN'
+  const isAdmin = can(session.role, 'leave.admin')
 
   // Verify access
   if (!isOwner && !isApprover && !isAdmin) notFound()
@@ -70,7 +71,7 @@ export default async function LeaveDetailPage({ params }: Props) {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Link href="/leave" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+        <Link href="/dashboard?tab=timeoff" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
           Back
         </Link>
         <div>

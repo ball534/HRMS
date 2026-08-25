@@ -24,7 +24,13 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import bcrypt from 'bcryptjs'
 import { createHash } from 'node:crypto'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
-import { buildPlaceholderTemplate } from '../src/lib/letterTemplate'
+import {
+  confirmationSections,
+  defaultSectionsFor,
+  mergeText,
+  type LetterKindName,
+  type LetterSection,
+} from '../src/lib/letterSections'
 import {
   addDays,
   addMonths,
@@ -48,16 +54,15 @@ const ALL_TABLES = [
   'RewardCycle',
   'PerformanceReview',
   'ReviewCycle',
-  'ExpenseApproval',
-  'ExpenseReceipt',
-  'Expense',
   'TimeEntry',
   'LeaveRequest',
   'LeaveBalance',
   'LeaveType',
   'Document',
   'EmploymentLetter',
-  'LetterTemplate',
+  'WorkPassDocument',
+  'Candidate',
+  'OnboardingSubmission',
   'WorkPass',
   'LearningLessonProgress',
   'LearningTestProgress',
@@ -80,7 +85,7 @@ const ALL_TABLES = [
 // Small helpers
 // ============================================================
 
-/** A tiny but valid PDF, so documents and receipts are really openable. */
+/** A tiny but valid PDF, so seeded documents are really openable. */
 async function makePdf(title: string, lines: string[]): Promise<Buffer> {
   const pdf = await PDFDocument.create()
   const page = pdf.addPage([595.28, 841.89])
@@ -284,25 +289,6 @@ async function main() {
   })
   console.log('Blackout windows: 3 (2 hard, 1 warning-only)')
 
-  // Letter templates — placeholders, so the letters flow works immediately.
-  for (const type of ['EMPLOYMENT', 'CONFIRMATION'] as const) {
-    const bytes = await buildPlaceholderTemplate(type)
-    const blobId = await storeBlob(bytes)
-    const fieldNames = (await PDFDocument.load(bytes))
-      .getForm()
-      .getFields()
-      .map(f => f.getName())
-    await prisma.letterTemplate.create({
-      data: {
-        type,
-        blobId,
-        fileName: `${type === 'EMPLOYMENT' ? 'Employment' : 'Confirmation'} Letter (placeholder).pdf`,
-        fieldNames,
-        isPlaceholder: true,
-      },
-    })
-  }
-  console.log('Letter templates: EMPLOYMENT + CONFIRMATION (placeholders)')
 
   // ==========================================================
   console.log('\n=== People ===')
@@ -319,6 +305,7 @@ async function main() {
         role: 'EMPLOYEE',
         status: 'ACTIVE',
         employmentType: 'EMPLOYEE',
+        citizenship: 'SG_CITIZEN',
         country: 'SG',
         company: 'iORA Fashion Pte Ltd',
         probationMonths: 3,
@@ -333,9 +320,9 @@ async function main() {
     email: 'jin@company.com',
     firstName: 'Jin',
     lastName: 'Lee',
-    role: 'ADMIN',
+    role: 'HR',
     position: 'Group IT Director',
-    department: 'Technology',
+    department: 'HQ',
     employeeNumber: 'IORA-0001',
     nric: 'S8012345A',
     gender: 'Male',
@@ -349,7 +336,7 @@ async function main() {
     email: 'audrey@iora.demo',
     firstName: 'Audrey',
     lastName: 'Wong',
-    role: 'ADMIN',
+    role: 'HR',
     position: 'Group Finance Director',
     department: 'Finance',
     employeeNumber: 'IORA-0002',
@@ -368,7 +355,7 @@ async function main() {
     lastName: 'Tan',
     role: 'MANAGER',
     position: 'Managing Director',
-    department: 'Executive',
+    department: 'HQ',
     employeeNumber: 'IORA-0003',
     nric: 'S7712345C',
     gender: 'Female',
@@ -385,7 +372,7 @@ async function main() {
     lastName: 'Chua',
     role: 'HR',
     position: 'HR Manager',
-    department: 'Human Resources',
+    department: 'HR',
     employeeNumber: 'IORA-0004',
     nric: 'S8534567D',
     gender: 'Female',
@@ -404,7 +391,7 @@ async function main() {
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
     position: 'HR Executive (MY)',
-    department: 'Human Resources',
+    department: 'HR',
     employeeNumber: 'IORA-0005',
     gender: 'Male',
     nationality: 'Malaysian',
@@ -440,7 +427,7 @@ async function main() {
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
     position: 'Retail Operations Manager (MY)',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0007',
     gender: 'Female',
     nationality: 'Malaysian',
@@ -456,7 +443,7 @@ async function main() {
     firstName: 'Wei Ling',
     lastName: 'Tan',
     position: 'Senior Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0101',
     nric: 'S9312345F',
     gender: 'Female',
@@ -474,11 +461,12 @@ async function main() {
     firstName: 'Priya',
     lastName: 'Sharma',
     position: 'Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0102',
     nric: 'S0112345G',
     gender: 'Female',
-    nationality: 'Singapore PR',
+    nationality: 'Singaporean',
+    citizenship: 'SG_PR',
     phone: '+65 9222 0002',
     startDate: subMonths(addDays(now, 14), 3),
     probationEndDate: addDays(now, 14),
@@ -510,7 +498,7 @@ async function main() {
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
     position: 'Store Supervisor',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0104',
     gender: 'Female',
     nationality: 'Malaysian',
@@ -527,7 +515,7 @@ async function main() {
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
     position: 'Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0105',
     gender: 'Male',
     nationality: 'Malaysian',
@@ -544,15 +532,18 @@ async function main() {
     email: 'kumar@iora.demo',
     firstName: 'Kumar',
     lastName: 'Raj',
+    role: 'PARTTIME',
     employmentType: 'PART_TIME',
     position: 'Part-time Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0201',
     nric: 'S9512345J',
     gender: 'Male',
     nationality: 'Singaporean',
     phone: '+65 9333 0001',
     hourlyRate: '14.5000',
+    hourlyRateWeekday: '14.5000',
+    hourlyRateWeekend: '17.5000',
     normalDailyHours: '8.00',
     startDate: subYears(now, 1),
     confirmationDate: subMonths(subYears(now, 1), -3),
@@ -565,14 +556,17 @@ async function main() {
     lastName: 'Xiu',
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
+    role: 'PARTTIME',
     employmentType: 'PART_TIME',
     position: 'Part-time Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0202',
     gender: 'Female',
     nationality: 'Malaysian',
     phone: '+60 12 500 0001',
     hourlyRate: '12.0000',
+    hourlyRateWeekday: '12.0000',
+    hourlyRateWeekend: '14.4000',
     normalDailyHours: '8.00',
     startDate: subMonths(now, 14),
     confirmationDate: subMonths(now, 11),
@@ -583,9 +577,10 @@ async function main() {
     email: 'tommy@iora.demo',
     firstName: 'Tommy',
     lastName: 'Goh',
+    role: 'PARTTIME',
     employmentType: 'PART_TIME',
     position: 'Part-time Stock Assistant',
-    department: 'Warehouse',
+    department: 'Logistics',
     employeeNumber: 'IORA-0203',
     nric: 'S9812345K',
     gender: 'Male',
@@ -601,15 +596,15 @@ async function main() {
     email: 'nguyen@iora.demo',
     firstName: 'Nguyen',
     lastName: 'Van An',
-    role: 'CONTRACTOR',
     employmentType: 'CONTRACTOR',
     position: 'Warehouse Assistant',
-    department: 'Warehouse',
+    department: 'Logistics',
     employeeNumber: 'IORA-0301',
     passportNumber: 'C1234567',
     passportExpiry: addMonths(now, 30),
     gender: 'Male',
     nationality: 'Vietnamese',
+    citizenship: 'FOREIGNER',
     phone: '+65 9444 0001',
     startDate: subYears(now, 2),
     confirmationDate: subMonths(subYears(now, 2), -3),
@@ -621,12 +616,13 @@ async function main() {
     firstName: 'Rajesh',
     lastName: 'Kumar',
     position: 'Assistant Store Manager',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0302',
     passportNumber: 'M7654321',
     passportExpiry: addMonths(now, 18),
     gender: 'Male',
     nationality: 'Indian',
+    citizenship: 'FOREIGNER',
     phone: '+65 9444 0002',
     startDate: subYears(now, 3),
     confirmationDate: subMonths(subYears(now, 3), -3),
@@ -640,12 +636,13 @@ async function main() {
     country: 'MY',
     company: 'iORA Fashion Sdn Bhd',
     position: 'Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0303',
     passportNumber: 'A9988776',
     passportExpiry: addMonths(now, 12),
     gender: 'Female',
     nationality: 'Indonesian',
+    citizenship: 'FOREIGNER',
     phone: '+60 12 600 0001',
     startDate: subYears(now, 2),
     confirmationDate: subMonths(subYears(now, 2), -3),
@@ -658,7 +655,7 @@ async function main() {
     firstName: 'Olivia',
     lastName: 'Tan',
     position: 'Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0106',
     nric: 'S0212345L',
     gender: 'Female',
@@ -676,7 +673,7 @@ async function main() {
     lastName: 'Chua',
     status: 'TERMINATED',
     position: 'Sales Associate',
-    department: 'Retail Operations',
+    department: 'Retail',
     employeeNumber: 'IORA-0107',
     nric: 'S9412345M',
     gender: 'Male',
@@ -700,9 +697,25 @@ async function main() {
     data: [
       { key: 'leave.fallbackApproverId', value: grace.id },
       { key: 'notify.emailEnabled', value: false }, // demo: don't email real people
+      // Who signs an employment letter, by department. Pre-selected when a
+      // letter is drafted; HR can override on any individual letter.
+      {
+        key: 'letters.departmentSignatories',
+        value: {
+          Retail: sara.id,
+          'Retail Operations': sara.id,
+          Logistics: marcus.id,
+          HQ: sara.id,
+          HR: grace.id,
+          Finance: audrey.id,
+          Marketing: sara.id,
+          Design: sara.id,
+          Merchandising: sara.id,
+        },
+      },
     ],
   })
-  console.log('Org settings: fallback approver = Grace, notification email OFF')
+  console.log('Org settings: fallback approver = Grace, email OFF, signatories mapped')
 
   // ==========================================================
   console.log('\n=== Leave ===')
@@ -920,73 +933,6 @@ async function main() {
   })
   timeEntryCount++
   console.log(`Time entries: ${timeEntryCount} across 3 part-timers (approved / submitted / draft / rejected)`)
-
-  // ==========================================================
-  console.log('\n=== Expenses ===')
-  // ==========================================================
-
-  async function receipt(label: string, amount: string) {
-    return storeBlob(
-      await makePdf('Receipt', [`Merchant: ${label}`, `Amount: ${amount}`, `Date: ${now.toDateString()}`]),
-    )
-  }
-
-  const expenseSpecs = [
-    { user: weiling, merchant: 'Grab', amount: '28.4000', currency: 'SGD', category: 'LOCAL_TRANSPORT' as const, status: 'DRAFT' as const, approver: null },
-    { user: weiling, merchant: 'Kopitiam Catering', amount: '156.0000', currency: 'SGD', category: 'MEALS_ENTERTAINMENT' as const, status: 'FOR_APPROVAL' as const, approver: audrey },
-    { user: aisyah, merchant: 'Grab MY', amount: '64.5000', currency: 'MYR', category: 'LOCAL_TRANSPORT' as const, status: 'FOR_APPROVAL' as const, approver: audrey },
-    { user: marcus, merchant: 'Officeworks', amount: '312.9000', currency: 'SGD', category: 'OFFICE_EXPENSES' as const, status: 'APPROVED' as const, approver: audrey },
-    { user: rajesh, merchant: 'Singapore Airlines', amount: '890.0000', currency: 'SGD', category: 'TRAVEL' as const, status: 'REIMBURSED' as const, approver: audrey },
-    { user: lokman, merchant: 'Watsons', amount: '45.2000', currency: 'MYR', category: 'MEDICAL' as const, status: 'REJECTED' as const, approver: audrey },
-  ]
-
-  for (const spec of expenseSpecs) {
-    const blobId = await receipt(spec.merchant, `${spec.currency} ${spec.amount}`)
-    const expense = await prisma.expense.create({
-      data: {
-        userId: spec.user.id,
-        category: spec.category,
-        amount: spec.amount,
-        currency: spec.currency,
-        merchant: spec.merchant,
-        receiptDate: subDays(now, 12),
-        description: `${spec.merchant} — demo claim`,
-        status: spec.status,
-        approverId: spec.approver?.id ?? null,
-        submittedAt: spec.status === 'DRAFT' ? null : subDays(now, 10),
-        reimbursedAt: spec.status === 'REIMBURSED' ? subDays(now, 3) : null,
-        reimbursedById: spec.status === 'REIMBURSED' ? audrey.id : null,
-        receipts: {
-          create: {
-            blobId,
-            fileName: `${spec.merchant.toLowerCase().replace(/\s+/g, '-')}-receipt.pdf`,
-            fileSize: 1200,
-            mimeType: 'application/pdf',
-            uploadedById: spec.user.id,
-          },
-        },
-      },
-    })
-
-    if (spec.approver) {
-      await prisma.expenseApproval.create({
-        data: {
-          expenseId: expense.id,
-          approverId: spec.approver.id,
-          status:
-            spec.status === 'FOR_APPROVAL'
-              ? 'PENDING'
-              : spec.status === 'REJECTED'
-                ? 'REJECTED'
-                : 'APPROVED',
-          comment: spec.status === 'REJECTED' ? 'Personal medical purchase — not claimable.' : null,
-          actedAt: spec.status === 'FOR_APPROVAL' ? null : subDays(now, 8),
-          order: 1,
-        },
-      })
-    }
-  }
-  console.log(`Expenses: ${expenseSpecs.length} (draft / for-approval ×2 / approved / reimbursed / rejected)`)
 
   // ==========================================================
   console.log('\n=== Performance ===')
@@ -1335,45 +1281,101 @@ async function main() {
     return storeBlob(await makePdf(`${type} Letter`, [`Employee: ${who}`, `Issued: ${now.toDateString()}`]))
   }
 
+  /**
+   * The letter body lives on the letter as editable sections. The seed fills
+   * them from the same defaults the app drafts from, so every letter in the
+   * demo reads like a real one and the section editor has something to edit.
+   */
+  type LetterSubject = {
+    firstName: string
+    position: string | null
+    department: string | null
+    company: string | null
+    country: string
+  }
+
+  function sectionsFor(kind: LetterKindName | null, who: LetterSubject): LetterSection[] {
+    const values: Record<string, string> = {
+      firstName: who.firstName,
+      position: who.position ?? '',
+      department: who.department ?? '',
+      company: who.company ?? 'IORA Group',
+      country: who.country === 'MY' ? 'Malaysia' : 'Singapore',
+      startDate: '1 April ' + thisYear,
+      probationMonths: '3',
+      probationEndDate: '1 July ' + thisYear,
+      confirmationDate: '1 July ' + thisYear,
+      hourlyRate: '14.50',
+      hourlyRateWeekday: '14.50',
+      hourlyRateSaturday: '16.00',
+      hourlyRateSundayPh: '18.00',
+      hourlyRateWeekend: '17.50',
+    }
+    const base = kind ? defaultSectionsFor(kind) : confirmationSections()
+    return base.map(section => ({
+      id: section.id,
+      title: mergeText(section.title, values),
+      body: mergeText(section.body, values),
+    }))
+  }
+
+  // A draft nobody has reviewed yet — the section editor's subject.
   await prisma.employmentLetter.create({
     data: {
       employeeId: olivia.id,
       type: 'EMPLOYMENT',
+      kind: 'FT_RETAIL',
       status: 'PENDING_REVIEW',
+      sections: sectionsFor('FT_RETAIL', olivia),
+      approvingOfficerId: sara.id,
       blobId: await letterPdf('Olivia Tan', 'Employment'),
     },
   })
+
+  // Signed by the Group and sitting with the employee: log in as Kumar to
+  // countersign it, which is what opens his onboarding document request.
+  await prisma.employmentLetter.create({
+    data: {
+      employeeId: kumar.id,
+      type: 'EMPLOYMENT',
+      kind: 'PT_RETAIL',
+      status: 'SENT',
+      sections: sectionsFor('PT_RETAIL', kumar),
+      reviewedById: grace.id,
+      reviewedAt: subDays(now, 5),
+      approvingOfficerId: sara.id,
+      signedAt: subDays(now, 3),
+      sentAt: subDays(now, 3),
+      blobId: await letterPdf('Kumar Raj', 'Employment'),
+    },
+  })
+
+  // Countersigned, with the onboarding documents still outstanding — this is
+  // what puts the banner on Priya's dashboard and a row in HR's tracker.
   await prisma.employmentLetter.create({
     data: {
       employeeId: priya.id,
       type: 'EMPLOYMENT',
-      status: 'PENDING_SIGNATURE',
+      kind: 'FT_RETAIL',
+      status: 'ACCEPTED',
+      sections: sectionsFor('FT_RETAIL', priya),
       reviewedById: grace.id,
-      reviewedAt: subDays(now, 4),
+      reviewedAt: subMonths(now, 3),
       approvingOfficerId: sara.id,
+      signedAt: subMonths(now, 3),
+      sentAt: subMonths(now, 3),
+      employeeAcceptedAt: subMonths(now, 3),
       blobId: await letterPdf('Priya Sharma', 'Employment'),
     },
   })
-  await prisma.employmentLetter.create({
-    data: {
-      employeeId: weiling.id,
-      type: 'CONFIRMATION',
-      status: 'SENT',
-      reviewedById: grace.id,
-      reviewedAt: subMonths(now, 33),
-      approvingOfficerId: sara.id,
-      signedAt: subMonths(now, 33),
-      sentAt: subMonths(now, 33),
-      dueDate: subMonths(now, 33),
-      blobId: await letterPdf('Wei Ling Tan', 'Confirmation'),
-    },
-  })
-  // OVERDUE confirmation — the cron chases this one.
+
+  // Waiting on a signatory, and past its due date — the cron chases this one.
   await prisma.employmentLetter.create({
     data: {
       employeeId: lokman.id,
       type: 'CONFIRMATION',
       status: 'PENDING_SIGNATURE',
+      sections: sectionsFor(null, lokman),
       reviewedById: hafiz.id,
       reviewedAt: subDays(now, 12),
       approvingOfficerId: siti.id,
@@ -1382,19 +1384,238 @@ async function main() {
       blobId: await letterPdf('Lokman Hakim', 'Confirmation'),
     },
   })
-  // REJECTED — re-draftable via reverseState.
+
+  // Historical, fully complete: signed by both sides years ago.
+  await prisma.employmentLetter.create({
+    data: {
+      employeeId: weiling.id,
+      type: 'CONFIRMATION',
+      status: 'ACCEPTED',
+      sections: sectionsFor(null, weiling),
+      reviewedById: grace.id,
+      reviewedAt: subMonths(now, 33),
+      approvingOfficerId: sara.id,
+      signedAt: subMonths(now, 33),
+      sentAt: subMonths(now, 33),
+      employeeAcceptedAt: subMonths(now, 33),
+      dueDate: subMonths(now, 33),
+      blobId: await letterPdf('Wei Ling Tan', 'Confirmation'),
+    },
+  })
+
+  // Rejected internally — re-draftable via reverseState.
   await prisma.employmentLetter.create({
     data: {
       employeeId: tommy.id,
       type: 'EMPLOYMENT',
+      kind: 'PT_LOGISTICS',
       status: 'REJECTED',
+      sections: sectionsFor('PT_LOGISTICS', tommy),
       rejectedById: grace.id,
       rejectedAt: subDays(now, 6),
       rejectionReason: 'Job title is wrong — should read Stock Assistant, not Sales Assistant.',
       blobId: await letterPdf('Tommy Goh', 'Employment'),
     },
   })
-  console.log('Letters: 5 (pending review / pending signature / sent / overdue / rejected)')
+
+  // Declined by the employee — the outcome HR needs to see and act on.
+  await prisma.employmentLetter.create({
+    data: {
+      employeeId: daniel.id,
+      type: 'EMPLOYMENT',
+      kind: 'FT_HQ',
+      status: 'DECLINED',
+      sections: sectionsFor('FT_HQ', daniel),
+      reviewedById: grace.id,
+      reviewedAt: subDays(now, 20),
+      approvingOfficerId: sara.id,
+      signedAt: subDays(now, 18),
+      sentAt: subDays(now, 18),
+      employeeDeclinedAt: subDays(now, 15),
+      employeeDeclineReason: 'Accepted another offer closer to home.',
+      blobId: await letterPdf('Daniel Ong', 'Employment'),
+    },
+  })
+  console.log('Letters: 7 (draft / with employee / accepted / overdue / historical / rejected / declined)')
+
+  // ==========================================================
+  console.log('\n=== Onboarding documents (form 2) ===')
+  // ==========================================================
+
+  /** An onboarding upload, filed as a Document against the employee. */
+  async function onboardingDoc(userId: string, name: string) {
+    const doc = await prisma.document.create({
+      data: {
+        name,
+        scope: 'EMPLOYEE',
+        category: 'PERSONAL_DOCS',
+        employeeId: userId,
+        blobId: await storeBlob(await makePdf(name, ['Demo scan — not a real document'])),
+        fileName: `${name}.pdf`,
+        fileSize: 1024,
+        mimeType: 'application/pdf',
+        uploadedById: userId,
+      },
+      select: { id: true },
+    })
+    return doc.id
+  }
+
+  // Outstanding: signed the letter, hasn't sent anything in. Priya is an SG PR,
+  // so her form also asks for an entry permit and a PR grant date.
+  await prisma.onboardingSubmission.create({
+    data: { userId: priya.id, createdAt: subMonths(now, 3) },
+  })
+
+  // Complete, so the tracker has both states on it.
+  await prisma.onboardingSubmission.create({
+    data: {
+      userId: weiling.id,
+      createdAt: subMonths(now, 33),
+      submittedAt: subMonths(now, 33),
+      bankName: 'DBS',
+      bankAccountName: 'Tan Wei Ling',
+      // Obviously fake, and never shown in full anywhere but HR's own screen.
+      bankAccountNumber: '0000123456',
+      nricFrontDocId: await onboardingDoc(weiling.id, 'NRIC (front)'),
+      nricBackDocId: await onboardingDoc(weiling.id, 'NRIC (back)'),
+      bankProofDocId: await onboardingDoc(weiling.id, 'Bank account details'),
+    },
+  })
+  console.log('Onboarding: 1 outstanding (Priya, SG PR), 1 complete (Wei Ling)')
+
+  // ==========================================================
+  console.log('\n=== Candidates ===')
+  // ==========================================================
+
+  const cvBlobId = await storeBlob(
+    await makePdf('Curriculum Vitae', ['Demo CV — not a real person', 'Retail experience: 3 years']),
+  )
+
+  await prisma.candidate.create({
+    data: {
+      firstName: 'Aisyah',
+      lastName: 'Rahim',
+      email: 'aisyah.rahim@example.com',
+      phone: '+65 9800 1001',
+      dateOfBirth: subYears(now, 24),
+      nationality: 'Singaporean',
+      citizenship: 'SG_CITIZEN',
+      positionApplied: 'Sales Associate',
+      department: 'Retail',
+      employmentTypeWanted: 'EMPLOYEE',
+      earliestStartDate: addDays(now, 21),
+      resumeBlobId: cvBlobId,
+      resumeFileName: 'Aisyah Rahim CV.pdf',
+      createdAt: subDays(now, 2),
+    },
+  })
+
+  await prisma.candidate.create({
+    data: {
+      firstName: 'Wesley',
+      lastName: 'Ng',
+      email: 'wesley.ng@example.com',
+      phone: '+65 9800 1002',
+      dateOfBirth: subYears(now, 31),
+      nationality: 'Singaporean',
+      citizenship: 'SG_CITIZEN',
+      positionApplied: 'Warehouse Assistant',
+      department: 'Logistics',
+      employmentTypeWanted: 'PART_TIME',
+      earliestStartDate: addDays(now, 7),
+      createdAt: subDays(now, 1),
+    },
+  })
+
+  // Shortlisted: the "record the outcome" buttons need a subject.
+  await prisma.candidate.create({
+    data: {
+      firstName: 'Nurul',
+      lastName: 'Huda',
+      email: 'nurul.huda@example.com',
+      phone: '+60 12 700 2001',
+      dateOfBirth: subYears(now, 27),
+      nationality: 'Malaysian',
+      citizenship: 'FOREIGNER',
+      positionApplied: 'Visual Merchandiser',
+      department: 'Merchandising',
+      employmentTypeWanted: 'EMPLOYEE',
+      earliestStartDate: addDays(now, 30),
+      status: 'FOR_INTERVIEW',
+      sentToInterviewAt: subDays(now, 3),
+      decidedById: grace.id,
+      notes: 'Strong portfolio. Interview booked with Marcus for Thursday.',
+      createdAt: subDays(now, 9),
+    },
+  })
+
+  // Already hired — the application Priya arrived through.
+  await prisma.candidate.create({
+    data: {
+      firstName: priya.firstName,
+      lastName: priya.lastName,
+      email: priya.email,
+      phone: priya.phone,
+      dateOfBirth: priya.dateOfBirth,
+      nationality: priya.nationality,
+      citizenship: 'SG_PR',
+      positionApplied: 'Sales Associate',
+      department: 'Retail',
+      employmentTypeWanted: 'EMPLOYEE',
+      status: 'PASSED',
+      sentToInterviewAt: subMonths(now, 4),
+      decidedAt: subMonths(now, 3),
+      decidedById: grace.id,
+      hiredUserId: priya.id,
+      notes: 'Interviewed well. Offered Sales Associate on standard retail terms.',
+      createdAt: subMonths(now, 4),
+    },
+  })
+
+  // Archived, with the reason on the record.
+  await prisma.candidate.create({
+    data: {
+      firstName: 'Bryan',
+      lastName: 'Teo',
+      email: 'bryan.teo@example.com',
+      phone: '+65 9800 1003',
+      dateOfBirth: subYears(now, 22),
+      nationality: 'Singaporean',
+      citizenship: 'SG_CITIZEN',
+      positionApplied: 'Sales Associate',
+      department: 'Retail',
+      status: 'ARCHIVED',
+      sentToInterviewAt: subDays(now, 25),
+      decidedAt: subDays(now, 18),
+      decidedById: grace.id,
+      notes: 'Withdrew before the interview — took a full-time role elsewhere.',
+      createdAt: subDays(now, 30),
+    },
+  })
+  console.log('Candidates: 2 new, 1 for interview, 1 hired, 1 archived')
+
+  // A scan filed against a work pass, so the attachment list is not empty.
+  const nguyenPass = await prisma.workPass.findFirst({
+    where: { userId: nguyen.id },
+    select: { id: true },
+  })
+  if (nguyenPass) {
+    await prisma.workPassDocument.create({
+      data: {
+        workPassId: nguyenPass.id,
+        blobId: await storeBlob(
+          await makePdf('Work Permit card', ['Demo scan — not a real permit']),
+        ),
+        fileName: 'WP1234567 card.pdf',
+        fileSize: 1024,
+        mimeType: 'application/pdf',
+        label: 'Pass card (front)',
+        uploadedById: grace.id,
+      },
+    })
+    console.log('Work-pass attachments: 1 (Nguyen, pass card)')
+  }
 
   // ==========================================================
   console.log('\n=== Documents ===')
@@ -1535,14 +1756,6 @@ async function main() {
         linkUrl: '/time',
       },
       {
-        userId: rajesh.id,
-        type: 'EXPENSE_REIMBURSED',
-        title: 'Your expense claim was reimbursed',
-        body: 'SGD 890.00 — Singapore Airlines',
-        linkUrl: '/expenses',
-        readAt: subDays(now, 2),
-      },
-      {
         userId: olivia.id,
         type: 'LEARNING_LOCKED_OUT',
         title: 'You are locked out of test1',
@@ -1595,7 +1808,7 @@ async function main() {
       },
     ],
   })
-  console.log('Notifications: 8 · Career events: 6 · Audit rows: 4')
+  console.log('Notifications: 7 · Career events: 6 · Audit rows: 4')
 
   // ==========================================================
   const blobCount = await prisma.fileBlob.count()
@@ -1604,24 +1817,27 @@ async function main() {
   console.log(`Files in Postgres: ${blobCount} blobs, ${((blobBytes._sum.fileSize ?? 0) / 1024).toFixed(1)} KB`)
   console.log(`
 Logins — password "test123" for everyone:
-  ADMIN      jin@company.com       Jin Lee (Group IT Director)
-  ADMIN      audrey@iora.demo      Audrey Wong (Finance — approves expenses/bonuses)
-  HR         grace@iora.demo       Grace Chua (SG) — fallback approver
+  HR         jin@company.com       Jin Lee (Group IT Director — full access)
+  HR         audrey@iora.demo      Audrey Wong (Finance — approves bonuses)
+  HR         grace@iora.demo       Grace Chua (SG) — fallback approver, hiring
   HR         hafiz@iora.demo       Hafiz Rahman (MY)
   MANAGER    sara@iora.demo        Sara Tan (MD — letter signer)
   MANAGER    marcus@iora.demo      Marcus Lee (SG team + approvals queue)
   MANAGER    siti@iora.demo        Siti Nurhaliza (MY team)
-  EMPLOYEE   weiling@iora.demo     Wei Ling Tan (rich history, certified, review to ack)
-  EMPLOYEE   priya@iora.demo       Priya Sharma (on probation, MC on file)
-  EMPLOYEE   daniel@iora.demo      Daniel Ong (NO manager — tests fallback routing)
-  EMPLOYEE   olivia@iora.demo      Olivia Tan (LOCKED OUT of test1)
-  PART_TIME  kumar@iora.demo       Kumar Raj (SG payroll + rejected timesheet day)
-  PART_TIME  chenxiu@iora.demo     Chen Xiu (MY payroll)
-  PART_TIME  tommy@iora.demo       Tommy Goh (NO hourly rate — payroll warning)
-  CONTRACTOR nguyen@iora.demo      Nguyen Van An (work permit, valid)
+  EMPLOYEE   weiling@iora.demo     Wei Ling Tan (rich history, certified, onboarding complete)
+  EMPLOYEE   priya@iora.demo       Priya Sharma (SG PR — onboarding documents OUTSTANDING)
+  EMPLOYEE   daniel@iora.demo      Daniel Ong (NO manager — fallback routing; DECLINED his letter)
+  EMPLOYEE   olivia@iora.demo      Olivia Tan (LOCKED OUT of test1; letter in draft)
+  PARTTIME   kumar@iora.demo       Kumar Raj (letter WAITING FOR HIS SIGNATURE, SG payroll)
+  PARTTIME   chenxiu@iora.demo     Chen Xiu (MY payroll)
+  PARTTIME   tommy@iora.demo       Tommy Goh (NO hourly rate — payroll warning)
+  EMPLOYEE   nguyen@iora.demo      Nguyen Van An (work permit valid, pass card attached)
   EMPLOYEE   rajesh@iora.demo      Rajesh Kumar (EP renewal due)
   EMPLOYEE   fatimah@iora.demo     Fatimah Zahra (work pass EXPIRED)
   EMPLOYEE   ben@iora.demo         Ben Chua (TERMINATED — cannot log in)
+
+Try: /apply (no login needed) → Candidates → send Nurul to interview → pass her
+     to create an account, email a temporary password and draft her letter.
 `)
 }
 

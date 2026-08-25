@@ -14,12 +14,22 @@ datasource db {
 // Enums
 // ============================================================
 
+// Four account types, matching how the business actually thinks about them.
+//
+// There used to be a separate ADMIN role sitting above HR, which meant the HR
+// team either lacked powers they needed day to day or shared the admin login —
+// and a shared login destroys the audit trail. HR is now the full-access
+// account. CONTRACTOR is gone as a role: it described an employment
+// arrangement, not a level of access, and that lives in `EmploymentType`.
+//
+// PARTTIME is EMPLOYEE plus the timesheet. It is the source of truth for
+// part-time status — `employmentType` is kept in step with it (see
+// src/actions/users.ts) so pay treatment and app access cannot disagree.
 enum Role {
-  ADMIN
   HR
   MANAGER
   EMPLOYEE
-  CONTRACTOR
+  PARTTIME
 }
 
 enum EmploymentType {
@@ -38,6 +48,14 @@ enum UserStatus {
 enum Country {
   SG
   MY
+}
+
+// Drives the work-pass expectation and which extra documents onboarding asks
+// for (an entry permit and PR grant date are collected from SG PRs only).
+enum Citizenship {
+  SG_CITIZEN
+  SG_PR
+  FOREIGNER
 }
 
 enum AuditAction {
@@ -98,6 +116,20 @@ enum AuditAction {
   LETTER_SENT
   LETTER_REMINDER_SENT
   CONFIRMATION_DATE_SET
+  LETTER_ACCEPTED
+  LETTER_DECLINED
+
+  // --- Hiring pipeline (see src/actions/candidates.ts) ---
+  CANDIDATE_APPLIED
+  CANDIDATE_UPDATED
+  CANDIDATE_SENT_TO_INTERVIEW
+  CANDIDATE_PASSED
+  CANDIDATE_ARCHIVED
+
+  // --- Onboarding form 2 ---
+  ONBOARDING_SUBMITTED
+  WORK_PASS_DOC_UPLOADED
+  WORK_PASS_DOC_DELETED
 
   // --- Offboarding (see src/actions/offboarding.ts) ---
   USER_OFFBOARDED
@@ -163,6 +195,8 @@ enum AuditEntityType {
   PAYROLL
   SETTING
   STATUTORY_RULES
+  CANDIDATE
+  ONBOARDING
 }
 
 enum HalfDayOption {
@@ -178,26 +212,6 @@ enum LeaveStatus {
   CANCELLED
 }
 
-enum ExpenseStatus {
-  DRAFT
-  SUBMITTED
-  FOR_APPROVAL
-  APPROVED
-  REJECTED
-  REIMBURSED
-}
-
-enum ExpenseCategory {
-  LOCAL_TRANSPORT
-  SUBSCRIPTIONS
-  OFFICE_EXPENSES
-  MEALS_ENTERTAINMENT
-  MEDICAL
-  COMMUNICATION
-  TRAVEL
-  TRAINING
-  OTHERS
-}
 
 // ============================================================
 // Performance review enums
@@ -294,14 +308,29 @@ enum LetterType {
   CONFIRMATION // post-probation confirmation letter
 }
 
+// Which body of terms an employment letter is drafted from. Derived from
+// employment type + department at draft time (see src/lib/letterKinds.ts) and
+// overridable by HR, because the two intern variants and the split between
+// retail and HQ terms are hiring decisions rather than data.
+enum LetterKind {
+  FT_RETAIL      // full-time, Retail + Retail Operations
+  FT_HQ          // full-time, all other departments
+  PT_LOGISTICS   // part-time logistics — weekday / Saturday / Sunday-PH rates
+  PT_RETAIL      // part-time retail — weekday / weekend rates
+  INTERN_REGULAR // internship outside a school programme
+  INTERN_SCHOOL  // school- or university-attached internship
+}
+
 // Lifecycle: a draft is auto-generated → HR reviews → approving officer
 // signs → PDF saved to Drive → (confirmation letters) sent via Lark.
 enum LetterStatus {
   PENDING_REVIEW    // auto-generated draft, waiting for HR to review
   PENDING_SIGNATURE // HR approved, waiting for the approving officer to sign
   SIGNED            // officer signed; PDF saved to the employee folder
-  SENT              // delivered to the employee (confirmation letters, via Lark)
-  REJECTED          // rejected at review or signing
+  SENT              // delivered to the employee, awaiting their response
+  ACCEPTED          // employee countersigned; both signatures on the final PDF
+  DECLINED          // employee turned the offer down
+  REJECTED          // rejected at review or signing (internal, not by the employee)
   OVERDUE           // confirmation letter not sent by its due date
 }
 
@@ -327,6 +356,7 @@ model User {
   passportNumber     String?
   passportExpiry     DateTime?
   company            String?        // legal entity the employee belongs to (pulled into work-pass view)
+  citizenship        Citizenship?   // carried over from the application; drives onboarding form 2
 
   position           String?
   department         String?
@@ -335,6 +365,16 @@ model User {
   hourlyRate         Decimal?       @db.Decimal(19, 4)
   normalDailyHours   Decimal?       @db.Decimal(5, 2)
   startDate          DateTime?
+
+  // Day-type rates for part-timers. Logistics letters quote three rates
+  // (weekday / Saturday / Sunday-and-PH), retail letters quote two
+  // (weekday / weekend). Timesheet pay and the payroll export still price
+  // every hour at `hourlyRate` above — these are the contractual figures the
+  // letter states, not a second pay engine.
+  hourlyRateWeekday   Decimal?      @db.Decimal(19, 4)
+  hourlyRateSaturday  Decimal?      @db.Decimal(19, 4)
+  hourlyRateSundayPh  Decimal?      @db.Decimal(19, 4)
+  hourlyRateWeekend   Decimal?      @db.Decimal(19, 4)
 
   // Probation / confirmation. probationEndDate is auto-computed from
   // startDate + probationMonths; confirmationDate is entered manually by HR.
@@ -356,11 +396,6 @@ model User {
   leaveRequests      LeaveRequest[] @relation("LeaveRequests")
   leaveApprovals     LeaveRequest[] @relation("LeaveApprovals")
   leaveBalances      LeaveBalance[]
-  expenses           Expense[]         @relation("UserExpenses")
-  expenseApprovals   Expense[]         @relation("ExpenseApprovals")
-  reimbursements     Expense[]         @relation("ExpenseReimbursements")
-  receiptUploads     ExpenseReceipt[]  @relation("ReceiptUploads")
-  approvalActions    ExpenseApproval[] @relation("ExpenseApprovalActions")
   ownDocuments       Document[]        @relation("EmployeeDocuments")
   uploadedDocs       Document[]        @relation("DocumentUploads")
   passwordResetTokens PasswordResetToken[]
@@ -392,7 +427,11 @@ model User {
 
   careerEvents           CareerEvent[]
   notifications          Notification[]
-  letterTemplateUploads  LetterTemplate[] @relation("LetterTemplateUploads")
+
+  candidateRecord        Candidate?         @relation("CandidateHire")
+  candidateDecisions     Candidate[]        @relation("CandidateDecisions")
+  workPassDocUploads     WorkPassDocument[] @relation("WorkPassDocUploads")
+  onboarding             OnboardingSubmission?
 }
 
 model PasswordResetToken {
@@ -493,66 +532,6 @@ model LeaveRequest {
   @@index([attachmentBlobId])
 }
 
-model Expense {
-  id             String          @id @default(uuid())
-  userId         String
-  user           User            @relation("UserExpenses", fields: [userId], references: [id])
-  category       ExpenseCategory
-  amount         Decimal         @db.Decimal(19, 4)
-  currency       String
-  merchant       String
-  receiptDate    DateTime
-  description    String?
-  status         ExpenseStatus   @default(DRAFT)
-  approverId     String?
-  approver       User?           @relation("ExpenseApprovals", fields: [approverId], references: [id])
-  reimbursedAt   DateTime?
-  reimbursedById String?
-  reimbursedBy   User?           @relation("ExpenseReimbursements", fields: [reimbursedById], references: [id])
-  submittedAt    DateTime?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-
-  receipts   ExpenseReceipt[]
-  approvals  ExpenseApproval[]
-
-  @@index([userId, status])
-  @@index([approverId, status])
-  @@index([receiptDate])
-}
-
-model ExpenseReceipt {
-  id           String   @id @default(uuid())
-  expenseId    String
-  expense      Expense  @relation(fields: [expenseId], references: [id])
-  blobId       String?
-  blob         FileBlob? @relation(fields: [blobId], references: [id])
-  fileName     String
-  fileSize     Int
-  mimeType     String
-  uploadedAt   DateTime @default(now())
-  uploadedById String
-  uploadedBy   User     @relation("ReceiptUploads", fields: [uploadedById], references: [id])
-
-  @@index([expenseId])
-  @@index([blobId])
-}
-
-model ExpenseApproval {
-  id         String    @id @default(uuid())
-  expenseId  String
-  expense    Expense   @relation(fields: [expenseId], references: [id])
-  approverId String
-  approver   User      @relation("ExpenseApprovalActions", fields: [approverId], references: [id])
-  status     String
-  comment    String?
-  actedAt    DateTime?
-  order      Int       @default(1)
-  createdAt  DateTime  @default(now())
-
-  @@index([expenseId])
-  @@index([approverId, status])
-}
 
 model Document {
   id           String            @id @default(uuid())
@@ -570,6 +549,12 @@ model Document {
   uploadedBy   User              @relation("DocumentUploads", fields: [uploadedById], references: [id])
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+
+  // Onboarding form 2 points at the documents it collected.
+  onboardingNricFront   OnboardingSubmission[] @relation("OnboardingNricFront")
+  onboardingNricBack    OnboardingSubmission[] @relation("OnboardingNricBack")
+  onboardingBankProof   OnboardingSubmission[] @relation("OnboardingBankProof")
+  onboardingEntryPermit OnboardingSubmission[] @relation("OnboardingEntryPermit")
 
   @@index([scope, employeeId])
   @@index([scope, employeeId, category])
@@ -803,6 +788,8 @@ model WorkPass {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
+  documents   WorkPassDocument[]
+
   @@index([userId])
   @@index([expiryDate])
 }
@@ -810,9 +797,15 @@ model WorkPass {
 // ============================================================
 // Employment / confirmation letters
 //   Auto-drafted on hire (EMPLOYMENT) or post-probation (CONFIRMATION),
-//   reviewed by HR, signed by a per-letter approving officer, the PDF
-//   stored in the employee's Drive folder, and (for confirmation letters)
-//   delivered via the notification adapter (Lark).
+//   reviewed by HR, signed by a per-letter approving officer, delivered to
+//   the employee, and countersigned or declined by them.
+//
+// The letter body lives in `sections` rather than in an uploaded template.
+// Each draft starts from the default section set for its `kind`
+// (src/lib/letterSections.ts) with the employee's details merged in, and HR
+// can then edit any section's wording, reorder them, and add or delete
+// sections before sending it for signature. The PDF is drawn from whatever
+// the sections say at the moment it is generated.
 // ============================================================
 
 model EmploymentLetter {
@@ -820,7 +813,16 @@ model EmploymentLetter {
   employeeId         String
   employee           User         @relation("EmployeeLetters", fields: [employeeId], references: [id], onDelete: Cascade)
   type               LetterType   @default(EMPLOYMENT)
+  /** Which default terms this letter was drafted from. Null for confirmation letters. */
+  kind               LetterKind?
   status             LetterStatus @default(PENDING_REVIEW)
+
+  /**
+   * The editable body: `[{ id, title, body }]`, in print order. Merge fields
+   * are already resolved when the draft is created, so what HR reads on screen
+   * is exactly what the PDF will say.
+   */
+  sections           Json         @default("[]")
 
   // HR review of the auto-generated draft
   reviewedById       String?
@@ -833,11 +835,18 @@ model EmploymentLetter {
   signatureDataUrl   String?      // drawn signature PNG (data URL), embedded into the PDF
   signedAt           DateTime?
 
-  // Rejection (at review or signing)
+  // Rejection (at review or signing) — an internal decision, distinct from the
+  // employee declining below.
   rejectedById       String?
   rejectedBy         User?        @relation("LetterRejecters", fields: [rejectedById], references: [id])
   rejectedAt         DateTime?
   rejectionReason    String?
+
+  // The employee's own response, once the signed letter reaches them.
+  employeeSignatureDataUrl String?
+  employeeAcceptedAt       DateTime?
+  employeeDeclinedAt       DateTime?
+  employeeDeclineReason    String?
 
   // The generated PDF.
   blobId             String?
@@ -856,6 +865,106 @@ model EmploymentLetter {
   @@index([employeeId])
   @@index([approvingOfficerId, status])
   @@index([blobId])
+}
+
+// ============================================================
+// Hiring pipeline
+//
+// A candidate is deliberately NOT a User. Applications arrive from a public
+// form filled in by people who mostly will not be hired, and giving each of
+// them a login — even a disabled one — would put strangers in the employee
+// directory, the org chart and every "all active users" query in the app.
+//
+// The pipeline is: an application arrives (NEW), HR sends the ones worth
+// meeting to interview (FOR_INTERVIEW), and recording a pass (PASSED) is what
+// creates the User account, emails the temporary password and drafts the
+// employment letter. Everything else is ARCHIVED, which keeps the application
+// readable without it ever having become an employee record.
+// ============================================================
+
+enum CandidateStatus {
+  NEW           // application received, nobody has looked at it yet
+  FOR_INTERVIEW // shortlisted to be interviewed
+  PASSED        // interview passed → account created + letter drafted
+  ARCHIVED      // not proceeding (at any stage)
+}
+
+model Candidate {
+  id                   String          @id @default(uuid())
+  firstName            String
+  lastName             String
+  email                String
+  phone                String?
+  dateOfBirth          DateTime?
+  nationality          String?
+  citizenship          Citizenship
+  positionApplied      String?
+  department           String?
+  employmentTypeWanted EmploymentType?
+  earliestStartDate    DateTime?
+
+  // Résumé, if they attached one. Held as a blob rather than a Document,
+  // because a Document belongs to an employee and a candidate is not one.
+  resumeBlobId         String?
+  resumeBlob           FileBlob?       @relation(fields: [resumeBlobId], references: [id])
+  resumeFileName       String?
+
+  status               CandidateStatus @default(NEW)
+  /** Interview notes / reason for archiving — whatever the decision rested on. */
+  notes                String?
+
+  decidedById          String?
+  decidedBy            User?           @relation("CandidateDecisions", fields: [decidedById], references: [id])
+  sentToInterviewAt    DateTime?
+  decidedAt            DateTime?
+
+  /** The employee record this application became, once the interview is passed. */
+  hiredUserId          String?         @unique
+  hiredUser            User?           @relation("CandidateHire", fields: [hiredUserId], references: [id])
+
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@index([resumeBlobId])
+}
+
+// ============================================================
+// Onboarding form 2 — collected after the employee countersigns their letter
+//
+// The row is created (empty) the moment they accept, so "who has not sent
+// their documents in yet" is a query rather than a spreadsheet. The uploads
+// themselves are ordinary Documents against the employee, which means the
+// existing file-access rules already restrict them to HR and the employee.
+// ============================================================
+
+model OnboardingSubmission {
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+
+  /** SG PR only — the date PR was granted, plus their entry permit. */
+  prGrantDate       DateTime?
+
+  nricFrontDocId    String?
+  nricFrontDoc      Document? @relation("OnboardingNricFront", fields: [nricFrontDocId], references: [id])
+  nricBackDocId     String?
+  nricBackDoc       Document? @relation("OnboardingNricBack", fields: [nricBackDocId], references: [id])
+  bankProofDocId    String?
+  bankProofDoc      Document? @relation("OnboardingBankProof", fields: [bankProofDocId], references: [id])
+  entryPermitDocId  String?
+  entryPermitDoc    Document? @relation("OnboardingEntryPermit", fields: [entryPermitDocId], references: [id])
+
+  submittedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([submittedAt])
 }
 
 // ============================================================
@@ -1026,7 +1135,8 @@ enum NotificationType {
   TIMESHEET_SUBMITTED
   TIMESHEET_APPROVED
   TIMESHEET_REJECTED
-  // Expenses
+  // Expenses. The module is gone; these values stay because notification rows
+  // written while it existed still reference them.
   EXPENSE_SUBMITTED
   EXPENSE_APPROVED
   EXPENSE_REJECTED
@@ -1048,7 +1158,12 @@ enum NotificationType {
   WORK_PASS_EXPIRED
   LETTER_READY_FOR_ACTION
   LETTER_SENT
+  LETTER_ACCEPTED
+  LETTER_DECLINED
   PROBATION_DUE
+  // Hiring / onboarding
+  CANDIDATE_APPLIED
+  ONBOARDING_DOCS_DUE
   // Cross-cutting
   APPROVAL_REASSIGNED
   STATE_REVERSED
@@ -1113,8 +1228,8 @@ model OrgSetting {
 // Files used to live in Google Drive. Storage is now Postgres: the bytes live
 // here and every record that owns a file references a blob by id.
 //
-// Why a separate table rather than a `Bytes` column on Document,
-// ExpenseReceipt and EmploymentLetter:
+// Why a separate table rather than a `Bytes` column on Document and
+// EmploymentLetter:
 //
 //   - `sha256` gives content addressing, so the same file uploaded twice is
 //     stored once. That is what makes a mass-push document safe — previously
@@ -1141,50 +1256,40 @@ model FileBlob {
   refCount  Int      @default(0)
   createdAt DateTime @default(now())
 
-  documents        Document[]
-  expenseReceipts  ExpenseReceipt[]
+  documents         Document[]
   employmentLetters EmploymentLetter[]
-  leaveAttachments LeaveRequest[]
-  letterTemplates  LetterTemplate[]
+  leaveAttachments  LeaveRequest[]
+  workPassDocs      WorkPassDocument[]
+  candidateResumes  Candidate[]
 
   @@index([refCount])
 }
 
 // ============================================================
-// Letter templates
+// Work-pass attachments
 //
-// Letters were generated by copying a Google Doc template, replacing
-// {{placeholders}} via the Docs API, and exporting to PDF. With Google
-// removed, a template is now a fillable PDF: HR uploads one per letter type
-// and the app fills its AcroForm text fields with pdf-lib, then flattens the
-// result so the output is not editable.
-//
-// `fieldNames` is what was actually found in the uploaded PDF, so the admin
-// screen can show HR which merge fields their template will receive and
-// which of the available ones it is not using.
+// The scans that prove a pass exists: the pass card itself, the in-principle
+// approval, a renewal letter. HR uploads them against a specific pass so they
+// are filed with the record they belong to rather than loose in the employee's
+// document folder; the employee can read their own and upload nothing.
 // ============================================================
 
-model LetterTemplate {
-  id           String     @id @default(uuid())
-  /** One active template per letter type. */
-  type         LetterType @unique
+model WorkPassDocument {
+  id           String   @id @default(uuid())
+  workPassId   String
+  workPass     WorkPass @relation(fields: [workPassId], references: [id], onDelete: Cascade)
   blobId       String
-  blob         FileBlob   @relation(fields: [blobId], references: [id])
+  blob         FileBlob @relation(fields: [blobId], references: [id])
   fileName     String
-  /** AcroForm text field names detected in the PDF on upload. */
-  fieldNames   String[]
-  /**
-   * True for the built-in template generated by
-   * `npm run letters:make-placeholder-templates`. It is deliberately plain and
-   * exists so the letters flow works before HR has supplied real stationery —
-   * the admin screen flags it as a placeholder.
-   */
-  isPlaceholder Boolean   @default(false)
-  uploadedById String?
-  uploadedBy   User?      @relation("LetterTemplateUploads", fields: [uploadedById], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  fileSize     Int
+  mimeType     String
+  /** What this scan is — "Pass card (front)", "IPA letter", "Renewal approval". */
+  label        String?
+  uploadedById String
+  uploadedBy   User     @relation("WorkPassDocUploads", fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now())
 
+  @@index([workPassId])
   @@index([blobId])
 }
 
